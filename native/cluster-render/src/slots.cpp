@@ -173,6 +173,11 @@ bool SlotManager::popup_blocks(int i, int64_t now_ms)
         for (const SlotInfo &r : rows->second)
             shown = shown || (r.content != 0 && (r.map_status == 1 || r.map_status == 2));
     }
+    if (!spec.yield_contents.empty())
+        for (const auto &kv : slots_)
+            for (const SlotInfo &r : kv.second)
+                for (uint64_t c : spec.yield_contents)
+                    shown = shown || (r.content == c && (r.map_status == 1 || r.map_status == 2));
     if (shown) {
         if (t.popup_ms < 0)
             log_info("target %s: stock content shows in a slot it gives way to (a pop-up, or parked behind it)", spec.name.c_str());

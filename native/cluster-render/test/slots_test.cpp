@@ -2669,6 +2669,51 @@ int main()
         ok("popup: asked for again once yield_ms has passed", joined().find("request hud") != std::string::npos);
     }
     {
+        /* BMW's HUD guidance (0x01000210 in 0x330): the HUD gives way while it shows, in any slot, and only to
+         * the contents listed (BMW's speed in another slot does not count) */
+        TargetSpec hud5;
+        FakePort port5;
+        FakeScenes scenes5;
+        SlotManager m5{&port5, &scenes5};
+        hud5.name = "hud"; hud5.slot = kHudSlot; hud5.scene_id = kPanelScene; hud5.width = 800; hud5.height = 480;
+        hud5.linger_ms = 3000;
+        hud5.yield_slots = {0x322};
+        hud5.yield_contents = {0x01000210};
+        hud5.yield_ms = 1500;
+        m5.add(hud5);
+        int64_t now = 400000;
+        const auto run = [&](int64_t ms) { for (int64_t x = 0; x < ms; x += 10) { now += 10; m5.tick(now); } };
+        const auto row = [&](uint64_t slot, uint32_t status, uint64_t content, uint32_t map) {
+            SlotInfo si; si.slot = slot; si.status = status; si.content = content; si.map_status = map;
+            m5.on_slots({si}, now);
+        };
+        calls.clear();
+        m5.want(0, true, false);
+        run(1200);
+        m5.on_shown(kPanelScene, now);
+        row(kHudSlot, 2, kPanelScene, 1);
+        run(20);
+        ok("guidance: the HUD asked for and shown", m5.status(0).state == TargetState::Shown);
+        calls.clear();
+        row(0x331, 2, 0x01000299, 1);          /* other stock content in a HUD slot: no give-way */
+        run(500);
+        ok("guidance: other content shown elsewhere does not move the HUD",
+           m5.status(0).state == TargetState::Shown && joined().find("release hud") == std::string::npos);
+        row(0x330, 2, 0x01000210, 1);          /* a route starts: BMW's guidance shows */
+        run(50);
+        ok("guidance: the HUD releases its slot and waits",
+           m5.status(0).state == TargetState::Waiting && joined().find("release hud") != std::string::npos);
+        row(kHudSlot, 1, 0, 0);
+        run(3000);
+        ok("guidance: not asked for while it shows, though our slot is free",
+           joined().find("request hud") == std::string::npos);
+        row(0x330, 1, 0x01000210, 0);          /* the route ends */
+        run(1000);
+        ok("guidance: still waiting within yield_ms after it went", joined().find("request hud") == std::string::npos);
+        run(1500);
+        ok("guidance: asked for again once yield_ms has passed", joined().find("request hud") != std::string::npos);
+    }
+    {
         /* Lost while the table names our id, the media pop-up showing before
          * the next report: the pop-up's wait settles that loss, so a later
          * wait (a request unanswered) is not taken for it */

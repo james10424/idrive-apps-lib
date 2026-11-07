@@ -68,6 +68,9 @@ void define_keys(cld::Config *cfg)
     cfg->define("map_yield_slots", "");
     cfg->define("panel_yield_slots", "");
     cfg->define("hud_yield_slots", "0x322");
+    cfg->define("map_yield_contents", "");
+    cfg->define("panel_yield_contents", "");
+    cfg->define("hud_yield_contents", "0x01000210");
     cfg->define("map_yield_ms", "1500");
     cfg->define("panel_yield_ms", "1500");
     cfg->define("hud_yield_ms", "1500");
@@ -176,6 +179,13 @@ bool load_targets(const cld::Config &cfg, int generation, std::vector<TargetSpec
                 while (std::getline(ys, ysl, ','))
                     if (!ysl.empty())
                         t.yield_slots.push_back(std::strtoull(ysl.c_str(), nullptr, 0));
+            }
+            if (cfg.has((p + "yield_contents").c_str())) {
+                std::stringstream yc(cfg.str((p + "yield_contents").c_str()));
+                std::string ycl;
+                while (std::getline(yc, ycl, ','))
+                    if (!ycl.empty())
+                        t.yield_contents.push_back(std::strtoull(ycl.c_str(), nullptr, 0));
             }
             if (cfg.has((p + "yield_ms").c_str()))
                 t.yield_ms = (int)cfg.num((p + "yield_ms").c_str());

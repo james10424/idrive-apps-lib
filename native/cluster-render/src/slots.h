@@ -158,6 +158,10 @@ struct TargetSpec {
      * again pushed it from the HUD to the cluster); yield_ms after it goes,
      * the target is asked for again. */
     std::vector<uint64_t> yield_slots;
+    /* Stock contents the target gives way to in any slot, the same way (BMW's
+     * HUD guidance, 0x01000210: the KOMBI shows our HUD scene over it while
+     * ours is mapped, so the route's turn map never shows). */
+    std::vector<uint64_t> yield_contents;
     int yield_ms = 1500;
     /* Its layers write from the HUD's share of the upload budget, and its
      * evidence never moves the upload cap (compositor.h). The HUD's. */
