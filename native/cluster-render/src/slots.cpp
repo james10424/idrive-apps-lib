@@ -173,11 +173,27 @@ bool SlotManager::popup_blocks(int i, int64_t now_ms)
         for (const SlotInfo &r : rows->second)
             shown = shown || (r.content != 0 && (r.map_status == 1 || r.map_status == 2));
     }
-    if (!spec.yield_contents.empty())
-        for (const auto &kv : slots_)
-            for (const SlotInfo &r : kv.second)
-                for (uint64_t c : spec.yield_contents)
-                    shown = shown || (r.content == c && (r.map_status == 1 || r.map_status == 2));
+    /* A yield content: given way to while it shows, and yield_contents_ms
+     * after the last one goes (a route's guidance blinks off and back). */
+    bool content = false;
+    for (const auto &kv : slots_)
+        for (const SlotInfo &r : kv.second)
+            for (uint64_t c : spec.yield_contents)
+                content = content || (r.content == c && (r.map_status == 1 || r.map_status == 2));
+    if (content) {
+        if (t.content_ms < 0)
+            log_info("target %s: stock content it gives way to shows (BMW's guidance); released until it goes",
+                     spec.name.c_str());
+        t.content_ms = now_ms;
+        return true;
+    }
+    if (t.content_ms >= 0) {
+        if (now_ms - t.content_ms < spec.yield_contents_ms)
+            return true;
+        log_info("target %s: the stock content it gave way to has been gone %d ms; asking again",
+                 spec.name.c_str(), spec.yield_contents_ms);
+        t.content_ms = -1;
+    }
     if (shown) {
         if (t.popup_ms < 0)
             log_info("target %s: stock content shows in a slot it gives way to (a pop-up, or parked behind it)", spec.name.c_str());

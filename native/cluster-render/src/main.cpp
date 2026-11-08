@@ -70,7 +70,10 @@ void define_keys(cld::Config *cfg)
     cfg->define("hud_yield_slots", "0x322");
     cfg->define("map_yield_contents", "");
     cfg->define("panel_yield_contents", "");
-    cfg->define("hud_yield_contents", "0x01000210");
+    cfg->define("hud_yield_contents", "0x01000210,0x01000310");
+    cfg->define("map_yield_contents_ms", "15000");
+    cfg->define("panel_yield_contents_ms", "15000");
+    cfg->define("hud_yield_contents_ms", "15000");
     cfg->define("map_yield_ms", "1500");
     cfg->define("panel_yield_ms", "1500");
     cfg->define("hud_yield_ms", "1500");
@@ -186,6 +189,12 @@ bool load_targets(const cld::Config &cfg, int generation, std::vector<TargetSpec
                 while (std::getline(yc, ycl, ','))
                     if (!ycl.empty())
                         t.yield_contents.push_back(std::strtoull(ycl.c_str(), nullptr, 0));
+            }
+            if (cfg.has((p + "yield_contents_ms").c_str()))
+                t.yield_contents_ms = (int)cfg.num((p + "yield_contents_ms").c_str());
+            if (t.yield_contents_ms < 0 || t.yield_contents_ms > 600000) {
+                *err = "target " + name + ": " + p + "yield_contents_ms must be from 0 to 600000";
+                return false;
             }
             if (cfg.has((p + "yield_ms").c_str()))
                 t.yield_ms = (int)cfg.num((p + "yield_ms").c_str());

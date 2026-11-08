@@ -122,12 +122,15 @@ cluster is offered, and what differs is in "iDrive 8".
   pushed the pop-up from the HUD to the cluster. It is asked for again
   `<target>_yield_ms` (1500) after the pop-up goes, and an overlay-only
   target gives way to stock content parked behind it the same way.
-  `<target>_yield_contents` gives way the same way to the stock contents it
-  lists, shown in any slot: the HUD's is BMW's guidance, `0x01000210`, which
-  does not show while our HUD scene is mapped even though it has slots of its
-  own (an X3's HUD, Nov 7 2026: the layers kept clear of the turn map and it
-  still did not show), so the HUD steps aside for the route and is asked for
-  again `yield_ms` after it ends.
+  `<target>_yield_contents` gives way to the stock contents it lists, shown
+  in any slot, and `<target>_yield_contents_ms` (15000) after the last one
+  goes. The HUD's are BMW's guidance, `0x01000210`, and the cluster's turn
+  box, `0x01000310`. On an X3 (Nov 7 2026) the guidance is mapped in 0x300,
+  which the KOMBI disables while our scene holds 0x323, so it can only come
+  while the HUD is released; the turn box, in 0x105, is not blocked, so it
+  starts the give-way when a route starts, and the longer wait keeps it while
+  both blink off mid-route (7 s there: asking again after 1.5 s kept the
+  guidance out for the rest of the route).
 - **The HUD** (iDrive 7, `hud`): slot 0x323 only, the slot the HUD map of
   [eroobeeroo](https://github.com/eroobeeroo) was shown in on a G80 and a
   G05 (VERIFIED there), scene 0x01000400, class 0.

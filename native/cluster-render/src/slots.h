@@ -158,10 +158,16 @@ struct TargetSpec {
      * again pushed it from the HUD to the cluster); yield_ms after it goes,
      * the target is asked for again. */
     std::vector<uint64_t> yield_slots;
-    /* Stock contents the target gives way to in any slot, the same way (BMW's
-     * HUD guidance, 0x01000210: the KOMBI shows our HUD scene over it while
-     * ours is mapped, so the route's turn map never shows). */
+    /* Stock contents the target gives way to in any slot while one shows, and
+     * yield_contents_ms after the last one goes. The HUD's: BMW's guidance
+     * (0x01000210, in 0x300 on an X3) and the cluster's turn box (0x01000310,
+     * in 0x105). Our HUD scene in 0x323 disables 0x300, so the guidance can
+     * only come while the HUD is released; the turn box, which our HUD does
+     * not block, starts the give-way at the route's start and keeps it while
+     * the guidance blinks off (an X3, Nov 7 2026: both went for 7 s mid-route,
+     * and asking again 1.5 s later kept the guidance out for the rest of it). */
     std::vector<uint64_t> yield_contents;
+    int yield_contents_ms = 15000;
     int yield_ms = 1500;
     /* Its layers write from the HUD's share of the upload budget, and its
      * evidence never moves the upload cap (compositor.h). The HUD's. */
@@ -444,6 +450,8 @@ private:
         bool lost_parked = false;       /* a hold: parked again, counted as a loss, since last shown */
         /* A pop-up in one of its yield slots was last seen shown then. */
         int64_t popup_ms = -1;
+        /* One of its yield contents was last seen shown then. */
+        int64_t content_ms = -1;
     };
 
     /* The renderers subscribed to one of our scenes since it was published:
