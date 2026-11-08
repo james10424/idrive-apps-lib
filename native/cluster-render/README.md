@@ -91,7 +91,8 @@ cluster is offered, and what differs is in "iDrive 8".
   renderer that subscribes gets the scene as it was last flushed, so a
   video writes only the tiles that differ from it. The scenes go at exit,
   and when a target needs a scene id another target's released scene has
-  (`panel` and `hud`).
+  (`panel` and `hud` by default; `map` and `hud` with
+  `hud_scene_id = 0x010004f0`).
 - **The KOMBI's queue** (VERIFIED on the car, slot 0x100, class 0,
   [dcsm/DCSM.md](dcsm/DCSM.md)):
   - The KOMBI never takes a slot from the content it shows. The first
@@ -133,15 +134,22 @@ cluster is offered, and what differs is in "iDrive 8".
   guidance out for the rest of the route).
 - **The HUD** (iDrive 7, `hud`): slot 0x323 only, the slot the HUD map of
   [eroobeeroo](https://github.com/eroobeeroo) was shown in on a G80 and a
-  G05 (VERIFIED there), scene 0x01000400, class 0.
+  G05 (VERIFIED there), scene 0x01000400 or 0x010004f0, class 0.
   - Another `hud_slot` or `hud_scene_id`, or `hud_take_over_stock` 1,
     leaves the HUD out: the
     service runs without it and logs why (`target hud left out: …`). It
     never takes a slot from the stock HMI, so BMW's own HUD content (its
     guidance, 0x01000210, in 0x330-0x332) is never unmapped; it gives way
     to the HUD's pop-ups (below).
-  - Its scene id is `panel`'s: the two are never asked for at once
-    ("Scene ids").
+  - By default its scene id is `panel`'s: the two are never asked for at
+    once ("Warm scenes"), so a client drawing on the panel all the time
+    keeps the HUD waiting ("scene id in use by another target").
+    `hud_scene_id = 0x010004f0`, the map's, lets the HUD show while the
+    panel does (VERIFIED on a G20 M340i, Nov 8 2026: our scene 0x010004f0
+    in 0x323 shown next to the panel, no KOMBI restart); then `map` and
+    `hud` take turns instead. The service logs `target hud: its own scene
+    id 0x10004f0, …` at start. The guard counts it as a mapping of its own
+    (`hud 0x323 0x10004f0 0`).
   - It has the HUD's share of the budget ("Upload budget"): up to half of
     it, only as much as it writes, and nothing it shows the governor moves
     the cap.
@@ -1069,7 +1077,10 @@ Not verified, needs the car:
   - that the KOMBI draws a warm scene asked for again. Once on the car, a
     scene destroyed and published again with the same id within a second
     was reported mapped and never drawn; `panel` and `hud` handing their
-    shared scene id over still do that.
+    shared scene id over still do that (`map` and `hud` with
+    `hud_scene_id = 0x010004f0`);
+  - `hud_scene_id = 0x010004f0` on cars other than a G20 M340i, and with
+    the Waze map (`map`) in use beside it.
 
 On iDrive 8 ("iDrive 8"), verified on the car with icwidget, a test widget
 of ours on the same calls (RAMSES 27 scene, DCSM offer, user 801), as

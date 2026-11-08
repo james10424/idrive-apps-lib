@@ -217,6 +217,9 @@ bool load_targets(const cld::Config &cfg, int generation, std::vector<TargetSpec
             log_warn("target hud left out: %s", why.c_str());
             continue;
         }
+        if (generation == 7 && name == "hud" && t.scene_id == kHudOwnScene)
+            log_info("target hud: its own scene id 0x%llx, shown with the panel; the map, with that id, and the HUD "
+                     "are never asked for at once", (unsigned long long)t.scene_id);
         /* Only scene ids the KOMBI is known to take: others (7702, 7703)
          * made it restart the cluster and the HUD. On iDrive 8, the ones
          * the cluster took. */

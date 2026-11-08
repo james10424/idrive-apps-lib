@@ -2029,12 +2029,12 @@ struct HudRig {
     SlotManager m{&port, &scenes};
     int64_t now = 100000;
     int map = 0, panel = 1, hud = 2;
-    HudRig()
+    explicit HudRig(uint64_t hud_scene = kPanelScene)
     {
         TargetSpec mp, pn, h;
         mp.name = "map"; mp.slot = kMapSlot; mp.scene_id = kMapScene; mp.width = 1088; mp.height = 480; mp.linger_ms = 0;
         pn.name = "panel"; pn.slot = kPanelSlot; pn.scene_id = kPanelScene; pn.width = 1920; pn.height = 720;
-        h.name = "hud"; h.slot = kHudSlot; h.scene_id = kPanelScene; h.width = 800; h.height = 480;
+        h.name = "hud"; h.slot = kHudSlot; h.scene_id = hud_scene; h.width = 800; h.height = 480;
         h.share = true; h.strike_limit = 2;   /* as cluster-render's main sets the iDrive 7 HUD */
         m.add(mp);
         m.add(pn);
@@ -2118,6 +2118,37 @@ static void hud_guard()
     }
     ok("panel and hud wanted at once: never both asked for, the second waits for the scene id",
        !both && r.m.status(r.hud).reason == "scene id in use by another target");
+}
+
+/* hud_scene_id = 0x010004f0 (holds.h kHudOwnScene): the HUD has the map's
+ * scene id, so it shows while the panel does, and it and the map take
+ * turns. */
+static void hud_own_scene()
+{
+    HudRig r(kMapScene);
+    calls.clear();
+    r.m.want(r.panel, true, false);
+    r.m.want(r.hud, true, true);
+    r.pass(100);
+    ok("hud own scene: panel and hud wanted at once, both asked for",
+       r.m.requested(r.panel) && r.m.requested(r.hud) && calls_are("publish panel; request panel; publish hud; request hud"));
+    r.m.on_shown(kPanelScene, r.now);
+    r.m.on_shown(kMapScene, r.now);
+    r.pass(20);
+    ok("hud own scene: both shown", r.m.status(r.panel).state == TargetState::Shown &&
+                                        r.m.status(r.hud).state == TargetState::Shown);
+    r.m.want(r.map, true, true);
+    r.pass(3000);
+    ok("hud own scene: the map (the same id) waits while the HUD is asked for, the HUD's scene untouched",
+       r.m.status(r.map).state == TargetState::Waiting &&
+           r.m.status(r.map).reason == "scene id in use by another target" && !r.m.requested(r.map) &&
+           r.m.published(r.hud) && r.m.status(r.panel).state == TargetState::Shown);
+    r.m.want(r.hud, false, false);
+    r.pass(3100);
+    const std::string c = joined();
+    ok("hud own scene: the HUD released, the map takes the id, the panel untouched",
+       c.find("release hud") != std::string::npos && c.find("unpublish hud; publish map; request map") != std::string::npos &&
+           r.m.requested(r.map) && r.m.status(r.panel).state == TargetState::Shown);
 }
 
 /* The mapping guard (guard.h) in the slot manager: one strike per mapping
@@ -2629,6 +2660,7 @@ int main()
     guide_no_flapping();
     guide_auto_slot();
     hud_guard();
+    hud_own_scene();
     {
         /* The HUD's media pop-up (0x322): the HUD map gives way while it shows */
         TargetSpec hud2;

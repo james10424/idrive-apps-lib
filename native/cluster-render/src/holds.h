@@ -37,14 +37,18 @@ struct HoldSettings {
 bool load_holds(const HoldSettings &cfg, const std::vector<uint64_t> &allowed, std::vector<TargetSpec> *targets,
                 std::string *warn);
 
-/* The HUD's slot and scene on iDrive 7 (README.md "The HUD"). */
-const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400;
+/* The HUD's slot and scene on iDrive 7 (README.md "The HUD"): kHudScene,
+ * the panel's, the default; kHudOwnScene, the map's, lets the HUD show
+ * while the panel does (VERIFIED on the car in 0x323 next to the panel,
+ * Nov 8 2026), the map and the HUD then never asked for at once. */
+const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400, kHudOwnScene = 0x010004f0;
 
 /* The iDrive 7 HUD's rules for t, the hud target: only slot kHudSlot with
- * scene kHudScene, never
+ * scene kHudScene or kHudOwnScene, never
  * taking a slot from the stock HMI; then its layers write from the HUD's
  * share of the budget and the guard disables it after two strikes. False,
- * with *why, for any other slot or a take-over: the HUD is left out. */
+ * with *why, for any other slot or scene id or a take-over: the HUD is left
+ * out. */
 bool hud_rules(TargetSpec *t, std::string *why);
 
 }  // namespace crs

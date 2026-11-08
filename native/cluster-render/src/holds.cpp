@@ -127,11 +127,12 @@ bool load_holds(const HoldSettings &cfg, const std::vector<uint64_t> &allowed, s
 
 bool hud_rules(TargetSpec *t, std::string *why)
 {
-    if (t->slot != kHudSlot || t->scene_id != kHudScene || t->take_over_stock) {
-        char b[200];
-        std::snprintf(b, sizeof b, "only slot 0x%llx with scene 0x%llx, without hud_take_over_stock (hud_slot 0x%llx, "
-                      "hud_scene_id 0x%llx%s)",
-                      (unsigned long long)kHudSlot, (unsigned long long)kHudScene, (unsigned long long)t->slot,
+    if (t->slot != kHudSlot || (t->scene_id != kHudScene && t->scene_id != kHudOwnScene) || t->take_over_stock) {
+        char b[240];
+        std::snprintf(b, sizeof b, "only slot 0x%llx with scene 0x%llx or 0x%llx, without hud_take_over_stock "
+                      "(hud_slot 0x%llx, hud_scene_id 0x%llx%s)",
+                      (unsigned long long)kHudSlot, (unsigned long long)kHudScene, (unsigned long long)kHudOwnScene,
+                      (unsigned long long)t->slot,
                       (unsigned long long)t->scene_id, t->take_over_stock ? ", hud_take_over_stock 1" : "");
         *why = b;
         return false;

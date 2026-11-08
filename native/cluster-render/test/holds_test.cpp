@@ -87,7 +87,12 @@ int main()
         ok("hud: slot 0x323 taken, with the HUD's share, struck out at 2", hud_rules(&h, &err) && h.share && h.strike_limit == 2);
         TargetSpec scene;
         scene.name = "hud"; scene.slot = 0x323; scene.scene_id = 0x010004f0;
-        ok("hud: another scene id (the map's) refused", !hud_rules(&scene, &err) && !scene.share);
+        ok("hud: its own scene id (the map's) taken, with the HUD's share, struck out at 2",
+           hud_rules(&scene, &err) && scene.share && scene.strike_limit == 2);
+        TargetSpec guide;
+        guide.name = "hud"; guide.slot = 0x323; guide.scene_id = 0x010004f1;
+        ok("hud: any other scene id (the guide hold's) refused, nothing set",
+           !hud_rules(&guide, &err) && !guide.share && err.find("hud_scene_id 0x10004f1") != std::string::npos);
         TargetSpec other;
         other.name = "hud"; other.slot = 0x330; other.scene_id = 0x01000400;
         ok("hud: any other slot refused, nothing set", !hud_rules(&other, &err) && !other.share && other.strike_limit == 0 &&
