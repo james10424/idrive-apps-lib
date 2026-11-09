@@ -14,7 +14,8 @@
 #                             in Docker (x86-64: the SSE2 paths against their scalar twins)
 #   make test-firmware ROOTFS=<dir>
 #                             DLT capture against the firmware's own dlt-daemon,
-#                             libdlt, dlt-receive and /etc/dlt.conf, in Docker
+#                             libdlt, dlt-receive, dlt-control and /etc/dlt.conf,
+#                             in Docker
 #   make target               head-unit binary build/target/waze-on-cluster,
 #                             built in Docker (Ubuntu 18.04 amd64: gcc 7.5,
 #                             glibc 2.27, the unit's libstdc++ ABI), linked

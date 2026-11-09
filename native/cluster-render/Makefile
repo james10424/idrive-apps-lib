@@ -10,7 +10,7 @@
 #   make test                 every host test: the kit, slot arbitration, the
 #                             RAMSES console reader, the upload governor, the
 #                             stack, layers and compositor
-#                             on a fake renderer, the service over its socket
+#                             on a fake renderer, the receive buffer, the service over its socket
 #                             with the C++ client, and the Node client
 #   make test-kit             the kit's tests alone (for producers that link it)
 #   make test-x86             the C++ tests built and run with the unit's
@@ -52,7 +52,7 @@ T = $(BUILD)/target
 H = $(BUILD)/host
 
 KIT_SRC  = kit/dirty_tiles.cpp kit/yuv_atlas.cpp kit/block_pack.cpp
-CORE_SRC = src/slots.cpp src/guard.cpp src/governor.cpp src/stack.cpp src/layer.cpp src/video_layer.cpp src/mesh_layer.cpp \
+CORE_SRC = src/slots.cpp src/guard.cpp src/governor.cpp src/stack.cpp src/recv_buffer.cpp src/layer.cpp src/video_layer.cpp src/mesh_layer.cpp \
            src/asset.cpp src/compositor.cpp \
            src/server.cpp src/service.cpp src/dcsm2_port.cpp src/dcsm27_port.cpp src/ramses_console.cpp \
            client/protocol.cpp src/log.cpp
@@ -68,7 +68,7 @@ CLIENT_SRC = client/client.cpp client/protocol.cpp
 KIT_TESTS = $(H)/map_upload_test $(H)/yuv_atlas_test $(H)/frame_clock_test $(H)/block_pack_test
 CPP_TESTS = $(H)/log_test $(H)/slots_test $(H)/governor_test $(H)/compositor_test $(H)/service_test \
 	$(H)/dcsm2_port_test $(H)/ramses_console_test $(H)/dcsm27_port_test $(H)/generation_test $(H)/holds_test \
-	$(H)/guard_test $(H)/head_unit_test $(H)/refused_test
+	$(H)/guard_test $(H)/head_unit_test $(H)/refused_test $(H)/recv_buffer_test
 
 all: test
 
@@ -90,6 +90,7 @@ test-cpp: $(CPP_TESTS)
 	$(H)/guard_test
 	$(H)/head_unit_test test/head_unit_cases.jsonl
 	$(H)/refused_test $(H)/cluster-render
+	$(H)/recv_buffer_test
 	$(H)/service_test
 
 test-js: $(H)/host_service
@@ -176,6 +177,9 @@ $(H)/holds_test: $(O)/test/holds_test.o $(O)/src/holds.o
 
 $(H)/guard_test: $(O)/test/guard_test.o $(O)/src/guard.o $(O)/src/log.o
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lpthread
+
+$(H)/recv_buffer_test: $(O)/test/recv_buffer_test.o $(O)/src/recv_buffer.o $(O)/client/protocol.o
+	$(CXX) $(CXXFLAGS) -o $@ $^
 
 $(H)/service_test: $(O)/test/service_test.o $(CORE_OBJ) $(O)/client/client.o
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lpthread

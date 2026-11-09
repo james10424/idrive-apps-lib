@@ -20,6 +20,7 @@
 
 #include "cluster_render/protocol.h"
 #include "compositor.h"
+#include "recv_buffer.h"
 #include "slots.h"
 
 namespace crs {
@@ -50,8 +51,7 @@ private:
         int fd = -1;
         uint64_t id = 0;
         std::string app;
-        std::string in;
-        size_t in_off = 0;
+        RecvBuffer in;
         std::string out;
         std::map<uint32_t, uint32_t> refs;            /* the client's ref -> layer id */
         std::map<uint32_t, uint32_t> assets;          /* the client's ref -> asset id */

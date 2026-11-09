@@ -5,7 +5,7 @@ var assert = require('assert'), fs = require('fs'), os = require('os');
 var net = require('net'), path = require('path'), cp = require('child_process');
 var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wc-'));
 var helper = path.join(__dirname, '..', 'dlt_capture.js');
-var children = [], sockets = [], modes = [], behavior = 'ok', tcp;
+var children = [], sockets = [], modes = [], levels = [], reqs = [], behavior = 'ok', tcp, level = 4;
 var env = Object.assign({}, process.env, {
     WOC_CAPTURE_DIR: path.join(dir, 'capture'), WOC_DLT_SOCKET: path.join(dir, 'ctrl'),
     WOC_TRACE_DIR: dir, WOC_CAPTURE_MS: '400',
@@ -35,6 +35,45 @@ function spawn(args) {
 function trace(mode) {
     fs.writeFileSync(path.join(dir, '12_dltd.idlt'), mode === 0 ? '2026/10/26 12:00:00 1 Tracing OFF: Switched to log mode off state \n' : '2026/10/26 12:00:00 1 Tracing ON: Switched to buffer state for socket connections \n');
 }
+// Replaces every iDLT file of the trace directory with the given ones.
+function records(files) {
+    fs.readdirSync(dir).filter(function (n) { return /\.idlt$/.test(n); }).forEach(function (n) { fs.unlinkSync(path.join(dir, n)); });
+    Object.keys(files).forEach(function (n) { fs.writeFileSync(path.join(dir, n), files[n].join('\n') + '\n'); });
+}
+function line(ms, text) { return '2026/11/07 14:58:42 ' + ms + ' ' + text; }
+// The records a resume left on the car: the manager's switch-off, no daemon mode record.
+var RESUME = {
+    '10673_dltd.idlt': ['2026/11/07 14:58:42 2203678 Control message received: Default log level set: OFF',
+        '2026/11/07 14:58:42 2203883 Control message received: Default trace status set: OFF'],
+    '10673_LTM.idlt': ['2026/11/07 14:58:42 2203661 Sending logmode OFF to daemon successful ',
+        '2026/11/07 14:58:42 2204079 Setting default loglevel and trace status successful ',
+        '2026/11/07 14:58:42 2204079 Trace mode off active ',
+        '2026/11/07 14:58:42 2204088 Clear DTC : Internal Trace B7F8F3',
+        '2026/11/07 14:58:42 2204262 Unconditional internal inactive ']
+};
+// Starts a capture and waits until the helper's own state leaves opening.
+async function settled() {
+    await command('start');
+    var reply;
+    await until(async function() { reply = await command('status'); return reply.state !== 'opening'; });
+    return reply;
+}
+// A capture from these records opens with this mode saved, and restores it.
+async function capturesFrom(files, mode, what) {
+    records(files); var from = reqs.length;
+    assert.strictEqual((await settled()).state, 'open', what + ': ' + JSON.stringify(state()));
+    assert.strictEqual(state().restore_mode, mode, what);
+    await command('stop'); await until(function() { return state().state === 'closed'; });
+    assert.strictEqual(modes[modes.length-1], mode, what);
+    return reqs.slice(from);
+}
+// A capture from these records is refused before any change reaches the daemon.
+async function refusedFrom(files, pattern, what) {
+    records(files); var from = reqs.length;
+    assert.strictEqual((await settled()).state, 'refused', what);
+    assert(pattern.test(state().error), what + ': ' + state().error);
+    assert.deepStrictEqual(reqs.slice(from).filter(function (r) { return r !== 'get'; }), [], what);
+}
 function netState(open) {fs.writeFileSync(path.join(env.WOC_DLT_PROC,'net','tcp'),open ? '0: 0100007F:'+Number(env.WOC_DLT_PORT).toString(16)+' 00000000:0000 0A\n' : 'sl local_address rem_address st\n');}
 async function openTCP() {
     if (tcp) return;
@@ -61,16 +100,33 @@ async function closeTCP() {
         var buf = Buffer.alloc(0);
         c.on('error', function() {});
         c.on('data', async function(d) {
-            buf = Buffer.concat([buf,d]); if (buf.length < 27) return;
-            // Frozen request fixture: BMW libdlt's UEH/WEID/WTMS control envelope.
-            assert.strictEqual(buf.slice(0,26).toString('hex'), '3500001b4d47485300000000160141505000434f4e00130f0000');
-            var mode = buf[26]; buf = Buffer.alloc(0); modes.push(mode);
-            if (behavior === 'hang' || (behavior === 'restore-hang' && mode !== 1)) return;
-            if (behavior !== 'reject') {
-                if (mode === 1) await openTCP(); else { await closeTCP(); trace(mode); }
+            buf = Buffer.concat([buf,d]); if (buf.length < 4 || buf.length < buf.readUInt16BE(2)) return;
+            var req = buf.slice(0, buf.readUInt16BE(2)); buf = Buffer.alloc(0);
+            var service = req.readUInt32LE(22), reply;
+            // Frozen request fixtures: BMW libdlt's UEH/WEID/WTMS control envelope.
+            if (service === 0x04) {
+                assert.strictEqual(req.toString('hex'), '3500001a4d47485300000000160141505000434f4e0004000000');
+                reqs.push('get');
+                if (behavior === 'get-reject') reply = '3500001c4d47485300000000260141505000434f4e00040000000100';
+                else reply = '3500001c4d47485300000000260141505000434f4e000400000000' + ('0' + level.toString(16)).slice(-2);
+            } else if (service === 0x11) {
+                assert.strictEqual(req.slice(0,26).toString('hex'), '3500001f4d47485300000000160141505000434f4e0011000000');
+                assert.strictEqual(req.slice(27).toString(), 'remo');
+                reqs.push('level ' + req[26]); levels.push(req[26]);
+                if (behavior === 'hang' || (behavior === 'restore-hang' && req[26] !== 4)) return;
+                var refuse = behavior === 'reject' || (behavior === 'restore-level-reject' && req[26] !== 4);
+                if (!refuse) level = req[26];
+                reply = '3500001b4d47485300000000260141505000434f4e00110000000' + (refuse ? '1' : '0');
+            } else {
+                assert.strictEqual(req.slice(0,26).toString('hex'), '3500001b4d47485300000000160141505000434f4e00130f0000');
+                var mode = req[26]; modes.push(mode); reqs.push('mode ' + mode);
+                if (behavior === 'hang' || (behavior === 'restore-hang' && mode !== 1)) return;
+                if (behavior !== 'reject') {
+                    if (mode === 1) await openTCP(); else { await closeTCP(); trace(mode); }
+                }
+                reply = '3500001b4d47485300000000260141505000434f4e00130f00000' + (behavior === 'reject' ? '1' : '0');
             }
-            var reply = Buffer.from('3500001b4d47485300000000260141505000434f4e00130f000000','hex');
-            if (behavior === 'reject') reply[26] = 1;
+            reply = Buffer.from(reply,'hex');
             // Fragmented acknowledgement exercises stream reassembly.
             c.write(reply.slice(0,3)); setTimeout(function() { c.end(reply.slice(3)); }, 5);
         });
@@ -121,6 +177,77 @@ async function closeTCP() {
     await until(function() { return state().owned; }); await command('stop');
     behavior='ok'; await until(function() { return state().state === 'closed'; });
     assert.strictEqual(modes[modes.length-1],2); console.log('ok stop during pending start and ambiguous timeout restores baseline');
+    assert.deepStrictEqual(levels, [], 'a default log level of INFO is left alone');
+
+    level = 0;
+    assert.deepStrictEqual(await capturesFrom(RESUME, 0, 'after resume'), ['get', 'level 4', 'mode 1', 'mode 0', 'level 0']);
+    assert.strictEqual(level, 0);
+    console.log('ok after-resume records: OFF, default log level raised to INFO for the window, both restored');
+    behavior = 'restore-level-reject'; records(RESUME);
+    await command('start'); await until(function() { return state().state === 'open'; });
+    await command('stop'); await until(function() { return state().state === 'restore_failed'; });
+    assert.strictEqual(state().owned, true); assert(/default log level/.test(state().error));
+    behavior = 'ok'; await until(function() { return state().state === 'closed'; });
+    assert.strictEqual(level, 0); assert.strictEqual(modes[modes.length-1], 0);
+    console.log('ok a rejected default log level restore stays visible and is retried');
+    level = 4;
+
+    await capturesFrom({ '20_dltd.idlt': [line(100, 'Tracing ON: Switched to buffer state for socket connections ')],
+        '21_dltd.idlt': [line(300, 'Tracing OFF: Switched to log mode off state ')],
+        '21_LTM.idlt': [line(299, 'Sending logmode OFF to daemon successful ')],
+        '22_dltd.idlt': [line(500, 'Control message received: Default log level set: OFF')],
+        '22_LTM.idlt': [line(400, 'Setting default loglevel and trace status successful ')] }, 0, 'newest lifecycle with a record');
+    await capturesFrom({ '21_dltd.idlt': [line(100, 'Tracing OFF: Switched to log mode off state '),
+        line(100, 'Control message received: Log mode set: OFF'),
+        line(200, 'Tracing ON: Switched to buffer state for socket connections '),
+        line(200, 'Control message received: Log mode set: BUFFER')],
+        '21_LTM.idlt': [line(101, 'Sending logmode OFF to daemon successful '),
+        line(201, 'Sending logmode BUFFER to daemon successful ')] }, 2, 'manager sends in order');
+    await capturesFrom({ '21_dltd.idlt': [line(100, 'Tracing OFF: Switched to log mode off state ')],
+        '21_LTM.idlt': [line(101, 'Sending logmode OFF to daemon successful ')],
+        '22_dltd.idlt': [line(200, 'Tracing ON: Switched to buffer state for socket connections ')] }, 2,
+        'a newer daemon record overrides the manager');
+    await capturesFrom({ '21_dltd.idlt': [line(100, 'Tracing ON: Switched to send direct state '),
+        line(200, 'Tracing OFF: Switched to log mode off state '),
+        line(200, 'Tracing ON: Switched to buffer state for socket connections '),
+        line(200, 'Control message received: Log mode set: OFF')] }, 0, 'OFF while a client was attached');
+    console.log('ok newest record wins across numbered files and writers');
+    await capturesFrom({ '30_LTM.idlt': [line(100, 'Sending logmode BUFFER to daemon successful ')] }, 2, 'manager only, BUFFER');
+    await capturesFrom({ '30_dltd.idlt': [line(100, 'Control message received: Log mode set: OFF')] }, 0, 'daemon request only');
+    await capturesFrom({ '30_dltd.idlt': [line(100, 'Control message received: Default log level set: INFO')],
+        '29_dltd.idlt': [line(50, 'Tracing ON: Switched to buffer state for socket connections ')],
+        '30_LTM.idlt': [line(90, 'Sending logmode BUFFER to daemon successful ')] }, 2, 'manager agrees with an older lifecycle');
+    console.log('ok a manager record without its daemon record, and the reverse');
+
+    await refusedFrom({ '30_LTM.idlt': [line(100, 'Sending logmode OFF to daemon unsuccessful ')] }, /unknown/, 'failed send');
+    await refusedFrom({ '30_dltd.idlt': [line(100, 'Tracing OFF: Switched to log mode off state ')],
+        '30_LTM.idlt': [line(100, 'Sending logmode OFF to daemon successful '),
+        line(200, 'Sending logmode OFF to daemon unsuccessful ')] }, /disagree/, 'failed send after a daemon record');
+    await refusedFrom({ '30_dltd.idlt': [line(100, 'Tracing ON: Switched to buffer state for socket connections ')],
+        '30_LTM.idlt': [line(200, 'Sending logmode OFF to daemon successful ')] }, /disagree/, 'manager contradicts daemon');
+    await refusedFrom({ '29_dltd.idlt': [line(100, 'Tracing ON: Switched to buffer state for socket connections ')],
+        '30_LTM.idlt': [line(200, 'Sending logmode OFF to daemon successful ')] }, /disagree/, 'contradiction across lifecycles');
+    await refusedFrom({ '30_dltd.idlt': [line(100, 'Tracing OFF: Switched to log mode off state ')],
+        '30_LTM.idlt': ['Sending logmode BUFFER to daemon successful '] }, /disagree/, 'an untimed manager record');
+    await refusedFrom({ '30_dltd.idlt': [line(100, 'Control message received: Log mode set: ON')] }, /unknown/, 'ON, listener closed');
+    await refusedFrom({ '30_LTM.idlt': [line(100, 'Sending logmode ON to daemon successful ')] }, /unknown/, 'manager ON');
+    await refusedFrom({ '30_LTM.idlt': [line(100, 'Trace mode off active '), line(101, 'Unconditional internal inactive ')] },
+        /unknown/, 'manager lines that name no mode');
+    var full = []; for (var j = 0; j < 500; j++) full.push(line(j, 'Setting default loglevel and trace status successful '));
+    await refusedFrom({ '30_LTM.idlt': full.concat([line(600, 'Sending logmode OFF to daemon successful ')]) },
+        /saturated/, 'saturated manager file');
+    behavior = 'get-reject';
+    await refusedFrom(RESUME, /default log level read/, 'unreadable default log level');
+    behavior = 'ok';
+    console.log('ok ambiguous, contradictory and unreadable records refused without mutation');
+
+    level = 0; records(RESUME);
+    await command('start'); await until(function() { return state().state === 'open'; });
+    assert.strictEqual(level, 4);
+    daemon.kill('SIGKILL'); await daemon.result;
+    cleanup = spawn(['restore']); assert.strictEqual((await cleanup.result).code, 0);
+    assert.strictEqual(state().owned, false); assert.strictEqual(level, 0); assert.strictEqual(modes[modes.length-1], 0);
+    console.log('ok ExecStopPost restores the default log level after SIGKILL');
     daemon.kill('SIGTERM'); await daemon.result;
     await new Promise(function(r) { ctrl.close(r); }); await closeTCP();
     console.log('DLT capture lifecycle passed');

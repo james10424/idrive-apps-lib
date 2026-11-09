@@ -7,8 +7,9 @@
  * signature found twice refused as ambiguous; a damaged site, a broken
  * cross-check or a relocation over an edit refused with the reason; apply
  * (only with --unproven), verify, probe and revert on a build outside the
- * proven list, byte-exact. With CARPLAY_BIN, the reference build's sites are
- * the documented offsets.
+ * proven list, byte-exact; a file with carplay 21.27.4's build-id but not its
+ * shipped bytes proven yet refused. With CARPLAY_BIN, the reference build's
+ * sites are the documented offsets.
  *
  *   node locate_test.js
  */
@@ -223,9 +224,39 @@ try {
     ok('status of an ambiguous build: known NO with the reason', /known:\s+NO — sink: URL slot found 2 times/.test(r.out), r.out);
     r = run(['apply', '--target', tgt, '--panel', 'high', '--yes']);
     ok('apply refuses it, no write', r.code !== 0 && /refusing: sink: URL slot found 2 times/.test(r.out) && fs.readFileSync(tgt).equals(amb), r.out);
+
+    /* A file with carplay 21.27.4's build-id and every site stock, but not
+     * that build's shipped file: on the proven list, so its first edit needs
+     * the shipped file, --unproven or not. */
+    var b2127 = Buffer.from(orig);
+    Buffer.from('389c1d0536f8cc9283c156410f2f2634a9f952c0', 'hex').copy(b2127, b2127.indexOf(Buffer.from(at.buildId, 'hex')));
+    fs.writeFileSync(tgt, b2127);
+    r = run(['probe', tgt]);
+    ok('carplay 21.27.4 build-id: probe reads it proven and patchable', r.code === 0 && /proven:\s+yes, carplay 21\.27\.4/.test(r.out) &&
+        /patchable:\s+yes/.test(r.out), r.out);
+    r = run(['status', '--target', tgt]);
+    ok('carplay 21.27.4 build-id: status proven, a modified build', /^proven:\s+yes$/m.test(r.out) && /known:\s+yes, modified build/.test(r.out), r.out);
+    [[], ['--unproven']].forEach(function (extra) {
+        r = run(['apply', '--target', tgt, '--panel', 'high', '--yes'].concat(extra));
+        ok('carplay 21.27.4 build-id, not its shipped file: apply ' + (extra[0] ? extra[0] + ' ' : '') + 'refuses, no write, no backup', r.code !== 0 &&
+            /first edit requires the pristine build: sha256 fb5d6b179ad4f62a968697d21e84dbb80adc1ad8e618a6f02c6a9a0467aca1ac, got /.test(r.out) &&
+            fs.readFileSync(tgt).equals(b2127) && !fs.existsSync(tgt + '.woc-orig'), r.out);
+    });
 } finally {
     cp.execFileSync('rm', ['-rf', dir]);
 }
+
+/* carplay 21.27.4's stock bytes agree with its probe: the stock sink in the
+ * sink slot, the call to setStreamStatus (0x1800d0) at 0x1802dc, and IC_HIGH
+ * 1920x900 in the pixel-size immediate. */
+(function () {
+    var p = require('../carplay_patch.js').PROVEN['389c1d0536f8cc9283c156410f2f2634a9f952c0'];
+    var call = Buffer.alloc(5), px = Buffer.alloc(8);
+    call[0] = 0xe8; call.writeInt32LE(0x1800d0 - (0x1802dc + 5), 1);
+    px.writeUInt32LE(1920, 0); px.writeUInt32LE(900, 4);
+    ok('carplay 21.27.4: its stock bytes as its probe reads them', !!p && json(p.stock) ===
+        json([[0x29bb10, Buffer.from(locator.SINK_STOCK, 'latin1').toString('hex')], [0x1802dc, call.toString('hex')], [0x20b484, px.toString('hex')]]), json(p));
+})();
 
 /* The reference build: the documented offsets. */
 var SRC = process.env.CARPLAY_BIN || '';

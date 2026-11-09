@@ -20,6 +20,9 @@ var DURATION = Math.min(Number(process.env.WOC_CAPTURE_MS) || 300000, 300000);
 var RETRY = Number(process.env.WOC_CAPTURE_RETRY_MS) || 5000;
 var STATE = path.join(DIR, 'state.json');
 var PROC = process.env.WOC_DLT_PROC || '/proc';
+// The capture's default log level, INFO: the level the log-and-trace manager
+// sets when it turns tracing on. A lower one is raised for the window only.
+var LEVEL = 4;
 
 // The firmware control dispatcher dereferences its application table before
 // dispatching any request. An app FIFO held by the daemon proves registration;
@@ -37,26 +40,29 @@ function registeredClient() {
     });
 }
 
-// BMW's 0xf13 service uses OFF=0, ON=1, BUFFER=2. This is a control request,
-// not the similarly named persistent user LoggingMode service.
-function setMode(mode) {
+// A control request on the daemon's socket, as libdlt's dlt-control sends it
+// (UEH/WEID/WTMS, ECU MGHS, APP/CON). Resolves with the response payload after
+// its service id: the status byte, then the service's own data.
+function request(service, data) {
     return new Promise(function (resolve, reject) {
         if (!registeredClient()) return reject(new Error('No registered DLT client; control request refused'));
         var socket = net.connect(CTRL), buf = Buffer.alloc(0), finished = false;
         var timer = setTimeout(function () { done(new Error('DLT acknowledgement timed out')); }, TIMEOUT);
-        function done(err) {
+        function done(err, reply) {
             if (finished) return;
             finished = true;
             clearTimeout(timer);
             socket.destroy();
-            if (err) reject(err); else resolve();
+            if (err) reject(err); else resolve(reply);
         }
         socket.on('error', done);
         socket.on('end', function () { done(new Error('DLT closed without acknowledgement')); });
         socket.on('connect', function () {
-            var request = Buffer.from('3500001b4d47485300000000160141505000434f4e00130f000000', 'hex');
-            request[26] = mode;
-            socket.write(request);
+            var head = Buffer.from('3500001b4d47485300000000160141505000434f4e00', 'hex');
+            var id = Buffer.alloc(4);
+            id.writeUInt32LE(service, 0);
+            head.writeUInt16BE(head.length + 4 + data.length, 2);
+            socket.write(Buffer.concat([head, id, Buffer.from(data)]));
         });
         socket.on('data', function (data) {
             buf = Buffer.concat([buf, data]);
@@ -70,13 +76,36 @@ function setMode(mode) {
                 var frame = buf.slice(0, length);
                 buf = buf.slice(length);
                 if (!(htyp & 1) || frame[ext] !== 0x26 || length < payload + 5) continue;
-                var service = (htyp & 2) ? frame.readUInt32BE(payload) : frame.readUInt32LE(payload);
-                if (service !== 0xf13) continue;
-                if (frame[payload + 4] !== 0) return done(new Error('DLT rejected mode: ' + frame[payload + 4]));
-                done();
+                var id = (htyp & 2) ? frame.readUInt32BE(payload) : frame.readUInt32LE(payload);
+                if (id !== service) continue;
+                done(null, frame.slice(payload + 4));
                 return;
             }
         });
+    });
+}
+
+// BMW's 0xf13 service uses OFF=0, ON=1, BUFFER=2. This is a control request,
+// not the similarly named persistent user LoggingMode service.
+function setMode(mode) {
+    return request(0xf13, [mode]).then(function (reply) {
+        if (reply[0] !== 0) throw new Error('DLT rejected mode: ' + reply[0]);
+    });
+}
+
+// The default log level (OFF=0 .. VERBOSE=6) applies to every context that
+// has no level of its own; at OFF those send nothing even while tracing is ON.
+function getLevel() {
+    return request(0x04, []).then(function (reply) {
+        if (reply[0] !== 0) throw new Error('DLT rejected default log level read: ' + reply[0]);
+        if (reply.length < 2 || reply[1] > 6) throw new Error('Invalid DLT default log level');
+        return reply[1];
+    });
+}
+
+function setLevel(level) {
+    return request(0x11, [level, 0x72, 0x65, 0x6d, 0x6f]).then(function (reply) {
+        if (reply[0] !== 0) throw new Error('DLT rejected default log level: ' + reply[0]);
     });
 }
 
@@ -117,28 +146,84 @@ function writeState(state) {
     fs.renameSync(STATE + '.tmp', STATE);
 }
 
-// The daemon has no mode getter. Its newest iDLT state record plus a closed TCP
-// listener distinguishes BUFFER from OFF. Each lifecycle (a resume included)
-// starts a new <lifecycle>_dltd.idlt, so the record can be in an older one; a
-// file at the firmware's 500-line cap may have dropped a newer record.
+// The daemon has no mode getter; its iDLT records name the mode. Each
+// lifecycle (a resume included) starts a new <lifecycle>_dltd.idlt from the
+// daemon and <lifecycle>_LTM.idlt from the log-and-trace manager, and an
+// older lifecycle's files may be gone. Lines read "<date> <time> <monotonic
+// ms> <text>"; both writers use CLOCK_MONOTONIC.
+var DAEMON_RECORDS = [
+    // Its state changes. A client closing also writes "buffer state", but only
+    // while the listener is open or within a mode request that records itself.
+    [/Tracing OFF: Switched to log mode off state/, 0],
+    [/Tracing ON: Switched to buffer state for socket connections/, 2],
+    [/Tracing ON: Switched to send direct state/, null],
+    // Every 0xf13 request it handled, also one that changed nothing.
+    [/Control message received: Log mode set: OFF\s*$/, 0],
+    [/Control message received: Log mode set: BUFFER\s*$/, 2],
+    [/Control message received: Log mode set: ON\s*$/, 1]
+];
+// The manager runs dlt-control -z only when its own last mode differs, and
+// writes "successful" also when it sent nothing. Such a record therefore says
+// what the daemon was last told, and has no daemon record of its own.
+var LTM_RECORD = /Sending logmode (OFF|ON|BUFFER) to daemon (successful|unsuccessful)\s*$/;
+var LTM_MODES = { OFF: 0, ON: 1, BUFFER: 2 };
+
+// The newest mode record of one file, as { time, mode } (mode null: refuse).
+function newestRecord(file, read) {
+    var st;
+    try { st = fs.statSync(file); } catch (err) { if (err.code === 'ENOENT') return null; throw err; }
+    // A file at either writer's 500-line cap may have dropped a newer record.
+    if (st.size > 256 * 1024) throw new Error('DLT state record too large');
+    var lines = fs.readFileSync(file, 'utf8').trim().split('\n');
+    if (lines.length >= 500) throw new Error('DLT state record saturated; starting mode unknown');
+    var found = null;
+    lines.forEach(function (line) {
+        var mode = read(line);
+        if (mode === undefined) return;
+        var time = /^\S+ \S+ (\d+) /.exec(line);
+        found = { time: time ? Number(time[1]) : NaN, mode: mode };
+    });
+    return found;
+}
+
+function daemonMode(line) {
+    for (var i = 0; i < DAEMON_RECORDS.length; i++) if (DAEMON_RECORDS[i][0].test(line)) return DAEMON_RECORDS[i][1];
+}
+
+function ltmMode(line) {
+    var m = LTM_RECORD.exec(line);
+    if (m) return m[2] === 'successful' ? LTM_MODES[m[1]] : null;
+}
+
+// The starting mode, from the newest record that names one. A daemon record
+// newer than the manager's decides. A manager record that is newer must agree
+// with the daemon's newest: had it sent its mode, the daemon would have
+// recorded that request after its own older record. A closed TCP listener
+// tells BUFFER from ON. Anything else refuses.
 function baseline() {
-    var files = fs.readdirSync(TRACE).map(function (name) { return /^(\d+)_dltd\.idlt$/.exec(name); })
-        .filter(Boolean).sort(function (a, b) { return b[1] - a[1]; });
-    for (var i = 0; i < files.length; i++) {
-        var file = path.join(TRACE, files[i][0]);
-        if (fs.statSync(file).size > 256 * 1024) throw new Error('DLT state record too large');
-        var lines = fs.readFileSync(file, 'utf8').trim().split('\n');
-        if (lines.length >= 500) throw new Error('DLT state record saturated; starting mode unknown');
-        var mode;
-        lines.forEach(function (line) {
-            if (/Tracing OFF: Switched to log mode off state/.test(line)) mode = 0;
-            if (/Tracing ON: Switched to buffer state for socket connections/.test(line)) mode = 2;
-            if (/Tracing ON: Switched to send direct state/.test(line)) mode = null;
-        });
-        if (mode === undefined) continue;
-        if (mode === null) break;
-        return mode;
+    var numbers = {};
+    fs.readdirSync(TRACE).forEach(function (name) {
+        var m = /^(\d+)_(?:dltd|LTM)\.idlt$/.exec(name);
+        if (m) numbers[m[1]] = Number(m[1]);
+    });
+    var order = Object.keys(numbers).map(function (k) { return numbers[k]; }).sort(function (a, b) { return b - a; });
+    var daemon = null, ltm = null;
+    for (var i = 0; i < order.length && !daemon; i++) {
+        var n = order[i];
+        daemon = newestRecord(path.join(TRACE, n + '_dltd.idlt'), daemonMode);
+        if (daemon) daemon.lifecycle = n;
+        if (!ltm) {
+            ltm = newestRecord(path.join(TRACE, n + '_LTM.idlt'), ltmMode);
+            if (ltm) ltm.lifecycle = n;
+        }
     }
+    var mode;
+    if (ltm && (!daemon || ltm.lifecycle > daemon.lifecycle ||
+        (ltm.lifecycle === daemon.lifecycle && !(ltm.time < daemon.time)))) {
+        if (daemon && daemon.mode !== ltm.mode) throw new Error('DLT state records disagree; capture refused');
+        mode = ltm.mode;
+    } else if (daemon) mode = daemon.mode;
+    if (mode === 0 || mode === 2) return mode;
     throw new Error('Starting DLT mode unknown; capture refused');
 }
 
@@ -148,6 +233,9 @@ async function restore() {
     var state = readState();
     if (!state.owned) return state;
     if (state.restore_mode !== 0 && state.restore_mode !== 2) throw new Error('Invalid saved DLT restore mode');
+    var level = state.restore_level;
+    if (level !== undefined && level !== null && !(Number.isInteger(level) && level >= 0 && level < LEVEL))
+        throw new Error('Invalid saved DLT restore level');
     state.state = 'closing';
     state.closes_at = null;
     writeState(state);
@@ -155,6 +243,7 @@ async function restore() {
     for (var i = 0; i < 3; i++) {
         try {
             await setMode(state.restore_mode);
+            if (level !== undefined && level !== null) await setLevel(level);
             if (await listening()) throw new Error('DLT listener still open after restore');
             state.state = 'closed';
             state.owned = false;
@@ -200,10 +289,13 @@ async function serve() {
             if (await listening()) throw new Error('Existing DLT listener active; capture refused');
             if (!registeredClient()) throw new Error('No registered DLT client; capture refused');
             var mode = baseline();
+            var level = await getLevel();
             state = { state: 'opening', owned: true, restore_mode: mode,
-                closes_at: Date.now() + DURATION, error: null };
-            writeState(state); // Record ownership before ON can reach the daemon.
+                restore_level: level < LEVEL ? level : null, closes_at: Date.now() + DURATION, error: null };
+            // Record ownership before a change can reach the daemon.
+            writeState(state);
             timer = setTimeout(close, DURATION);
+            if (state.restore_level !== null) await setLevel(LEVEL);
             await setMode(1);
             if (!(await listening())) throw new Error('DLT acknowledged ON but listener did not open');
             state.state = 'open';
@@ -249,4 +341,4 @@ if (require.main === module) {
     }); } : serve;
     run().catch(function (err) { process.stderr.write('dlt-capture: ' + err.message + '\n'); process.exit(1); });
 }
-module.exports = { listening: listening };
+module.exports = { listening: listening, getLevel: getLevel };

@@ -340,7 +340,7 @@ void Server::accept_client(int64_t)
         Client c;
         c.fd = fd;
         c.id = next_client_++;
-        clients_.push_back(c);
+        clients_.push_back(std::move(c));
     }
 }
 
@@ -360,23 +360,20 @@ void Server::read_client(Client &c, int64_t now_ms)
     /* At most a few messages' worth per pass, so one busy producer cannot
      * hold the render loop. */
     size_t budget = 4 << 20;
-    char buf[65536];
     for (;;) {
-        ssize_t r = read(c.fd, buf, sizeof buf);
+        ssize_t r = c.in.fill(c.fd);
         if (r == 0 || (r < 0 && errno != EAGAIN && errno != EINTR)) {
             c.closing = true;
             break;
         }
         if (r < 0)
             break;
-        c.in.append(buf, (size_t)r);
         for (;;) {
-            size_t used = 0, body_len = 0;
+            size_t body_len = 0;
             uint8_t type = 0;
             const char *body = nullptr;
             bool bad = false;
-            if (!cr::next_message(c.in.data() + c.in_off, c.in.size() - c.in_off, &used, &type, &body, &body_len,
-                                  &bad)) {
+            if (!c.in.next(&type, &body, &body_len, &bad)) {
                 if (bad) {
                     log_warn("client %llu: malformed message, disconnected", (unsigned long long)c.id);
                     c.closing = true;
@@ -389,14 +386,10 @@ void Server::read_client(Client &c, int64_t now_ms)
                 on_frame(c, body, body_len, now_ms);
             else if (type == cr::kMesh)
                 on_mesh(c, body, body_len, now_ms);
-            c.in_off += used;
             if (c.closing)
                 break;
         }
-        if (c.in_off) {
-            c.in.erase(0, c.in_off);
-            c.in_off = 0;
-        }
+        c.in.settle();
         if (c.closing || (size_t)r >= budget)
             break;
         budget -= (size_t)r;

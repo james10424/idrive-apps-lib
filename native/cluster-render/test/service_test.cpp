@@ -29,13 +29,17 @@
  * last frame whole again to one that does not, to one that restarted and
  * after the service refuses the layer; a refused layer's still map answered
  * with one error; repeats waiting behind a whole frame sent as one, or not
- * at all once a newer frame is queued. */
+ * at all once a newer frame is queued. The service's reads: a frame split
+ * across reads, several messages in one, one of the largest length, and one
+ * longer or empty disconnecting only its client. */
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 
@@ -842,6 +846,104 @@ static void repeats()
     }
 }
 
+/* The service's reads (recv_buffer.h): a frame split across reads, its
+ * length too, shown byte for byte; several messages in one write; a
+ * message of the largest length taken; one longer and one empty
+ * disconnecting their client and nobody else. */
+static void framing()
+{
+    Rig r;
+    Raw raw(r.path);
+    fcntl(raw.fd, F_SETFL, fcntl(raw.fd, F_GETFL) | O_NONBLOCK);
+    /* All of m, a piece at a time, the service running between pieces. */
+    auto put = [&](const std::string &m, size_t piece) {
+        for (size_t off = 0; off < m.size();) {
+            const ssize_t k = write(raw.fd, m.data() + off, std::min(piece, m.size() - off));
+            if (k > 0)
+                off += (size_t)k;
+            r.pump(5);
+        }
+    };
+    auto gone = [&](int fd) {
+        char b[4096];
+        for (int i = 0; i < 100; i++) {
+            const ssize_t n = read(fd, b, sizeof b);
+            if (n == 0)
+                return true;
+            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+                return true;
+            r.pump(5);
+        }
+        return false;
+    };
+    put(cr::encode(cr::kJson, "{\"op\":\"hello\",\"app\":\"raw\"}") +
+            cr::encode(cr::kJson, "{\"op\":\"layer\",\"ref\":1,\"target\":\"map\",\"kind\":\"video\"}") +
+            cr::encode(cr::kJson, "{\"op\":\"status\"}"),
+        1 << 20);
+    r.pump(20);
+    std::string ev = raw.events();
+    ok("several messages in one write: each answered in order",
+       ev.find("\"ev\":\"hello\"") < ev.find("\"ev\":\"status\"") && ev.find("\"ev\":\"status\"") != std::string::npos &&
+           r.svc->compositor().layers().size() == 1);
+
+    const std::vector<uint8_t> f = atlas(5);
+    const std::string frame = cr::frame_head(1, 1, {}, f.size()) + std::string(f.begin(), f.end());
+    put(frame.substr(0, 2), 1);
+    put(frame.substr(2, 9), 3);
+    put(frame.substr(11, 70000), 70000);
+    put(frame.substr(70011), 300000);
+    r.pump(200);
+    std::vector<uint8_t> rounded(f.size());
+    crk::round_levels(rounded.data(), f.data(), f.size(), 2);
+    bool shown = false;
+    if (FakeGraph *g = r.gpu.graph("map"))
+        for (const auto &kv : g->shown.buffers)
+            shown = shown || (kv.second.f == TexFormat::R8 && kv.second.px == rounded);
+    ok("a frame split across reads, its length too, is shown byte for byte", shown);
+
+    const std::vector<uint8_t> f2 = atlas(6);
+    std::string two = cr::frame_head(1, 2, {}, f.size()) + std::string(f.begin(), f.end()) +
+                      cr::frame_head(1, 3, {}, f2.size()) + std::string(f2.begin(), f2.end()) +
+                      cr::encode(cr::kJson, "{\"op\":\"status\"}");
+    put(two, two.size());
+    r.pump(200);
+    crk::round_levels(rounded.data(), f2.data(), f2.size(), 2);
+    shown = false;
+    if (FakeGraph *g = r.gpu.graph("map"))
+        for (const auto &kv : g->shown.buffers)
+            shown = shown || (kv.second.f == TexFormat::R8 && kv.second.px == rounded);
+    ok("two frames and a message in one write: the newer frame shown", shown);
+
+    std::string largest(4, '\0');
+    for (int i = 0; i < 4; i++)
+        largest[i] = (char)(cr::kMaxMessage >> (8 * i));
+    largest += (char)cr::kFrame;
+    largest += std::string(4, '\x09');   /* ref 0x09090909: none */
+    largest += std::string(cr::kMaxMessage - 5, '\0');
+    raw.in.clear();
+    put(largest + cr::encode(cr::kJson, "{\"op\":\"status\"}"), 1 << 20);
+    r.pump(50);
+    ev = raw.events();
+    ok("a message of the largest length is taken: answered, the client kept",
+       ev.find("no such layer") != std::string::npos && ev.find("\"ev\":\"status\"") != std::string::npos &&
+           r.svc->server().clients() == 1);
+
+    Raw other(r.path);
+    other.send("{\"op\":\"hello\",\"app\":\"other\"}");
+    r.pump(20);
+    std::string longer(4, '\0');
+    for (int i = 0; i < 4; i++)
+        longer[i] = (char)((cr::kMaxMessage + 1) >> (8 * i));
+    put(longer + "F", 5);
+    ok("a message longer than the largest: its client disconnected, its layer removed",
+       gone(raw.fd) && r.svc->compositor().layers().empty() && r.svc->server().clients() == 1);
+    Raw empty(r.path);
+    empty.send_message(std::string(4, '\0') + "J{}");
+    r.pump(20);
+    ok("an empty message: its client disconnected, the other kept",
+       gone(empty.fd) && r.svc->server().clients() == 1 && other.events().find("\"ev\":\"hello\"") != std::string::npos);
+}
+
 int main()
 {
     signal(SIGPIPE, SIG_IGN);
@@ -1272,6 +1374,7 @@ int main()
     guide_hold_choice();
     mapping_guard();
     repeats();
+    framing();
     std::printf(failures ? "%d FAILED\n" : "all ok\n", failures);
     return failures ? 1 : 0;
 }

@@ -44,6 +44,16 @@ function command(cmd) {
         c.on('data', function (d) { buf += d; if (buf.indexOf('\n') >= 0) { c.destroy(); resolve(JSON.parse(buf)); } });
     });
 }
+/* dlt-control as the log-and-trace manager runs it. */
+function control(args) {
+    var r = cp.spawnSync('dlt-control', ['-u', '-t', '1000'].concat(args), { encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, 'dlt-control ' + args.join(' ') + ': ' + r.stdout + r.stderr);
+}
+/* A manager record: both writers stamp CLOCK_MONOTONIC milliseconds, as hrtime reads it. */
+function ltmLine(text) {
+    var t = process.hrtime();
+    return '2026/11/07 14:58:42 ' + Math.floor(t[0] * 1000 + t[1] / 1e6) + ' ' + text;
+}
 function startHelper() {
     var h = spawn(process.execPath, [helperPath], { WOC_CAPTURE_MS: '4000' });
     return until(function () { return command('status').then(function () { return true; }, function () { return false; }); },
@@ -54,6 +64,7 @@ function startHelper() {
     fs.symlinkSync('/lib64/ld-linux-x86-64.so.2', '/lib/ld-linux-x86-64.so.2');
     install('/usr/bin/dlt-daemon', '/usr/local/bin/dlt-daemon', 0o755);
     install('/usr/bin/dlt-receive', '/usr/local/bin/dlt-receive', 0o755);
+    install('/usr/bin/dlt-control', '/usr/local/bin/dlt-control', 0o755);
     install('/usr/lib/libdlt.so.2.15.0', '/usr/lib/libdlt.so.2', 0o755);
     fs.symlinkSync('/usr/lib/libdlt.so.2', '/usr/lib/libdlt.so');
     install('/etc/dlt.conf', '/etc/dlt.conf', 0o644);
@@ -99,6 +110,48 @@ function startHelper() {
     assert.strictEqual(state().owned, false);
     assert.strictEqual(daemon.exitCode, null, 'dlt-daemon must survive');
     console.log('ok new lifecycle, helper SIGKILLed while open: restore subcommand closes the listener');
+
+    // The log-and-trace manager switches tracing off as it does before a
+    // suspend: log mode OFF, default log level OFF, default trace status OFF.
+    ['-z', '-d', '-f'].forEach(function (option) { control([option, '0']); });
+    // The resume: a new lifecycle, only its own files. The manager's last mode
+    // is already OFF, so it records the mode without sending it, and sets the
+    // default log level and trace status again.
+    fs.writeFileSync('/run/lifecycle-ioc/lccount', '14\n');
+    fs.readdirSync('/run/logntrace').forEach(function (n) { fs.unlinkSync('/run/logntrace/' + n); });
+    var ltm = [ltmLine('Sending logmode OFF to daemon successful ')];
+    control(['-d', '0']); control(['-f', '0']);
+    ltm.push(ltmLine('Setting default loglevel and trace status successful '), ltmLine('Trace mode off active '));
+    fs.writeFileSync('/run/logntrace/14_LTM.idlt', ltm.join('\n') + '\n');
+    assert(!/Tracing|Log mode set/.test(fs.readFileSync('/run/logntrace/14_dltd.idlt', 'utf8')), 'no daemon mode record after resume');
+    assert.strictEqual(await helper.getLevel(), 0);
+    h = await startHelper();
+    await command('start');
+    await until(function () { return /open|refused|restore_failed/.test(state().state); }, 'capture open after resume');
+    assert.strictEqual(state().state, 'open', JSON.stringify(state()));
+    assert.strictEqual(state().restore_mode, 0);
+    assert.strictEqual(state().restore_level, 0);
+    r = spawn('dlt-receive', ['-a', 'localhost']);
+    assert.notStrictEqual(await Promise.race([r.done, delay(10000).then(function () { return 'timeout'; })]), 'timeout',
+        'dlt-receive must exit when the capture closes');
+    // The client logs ten markers a second at INFO. At the default log level
+    // OFF only the few it queued before the window arrive.
+    var markers = (r.out.match(/Adding display: capture-test/g) || []).length;
+    assert(markers >= 15, 'dlt-receive must get the markers throughout the window after resume, got ' + markers);
+    await until(function () { return state().state === 'closed'; }, 'deadline restore after resume');
+    assert.strictEqual(await helper.listening(), false);
+    assert.strictEqual(await helper.getLevel(), 0, 'default log level OFF restored');
+    console.log('ok after resume: OFF read from the manager record, marker received, mode and default log level restored');
+
+    await command('start');
+    await until(function () { return /open|refused|restore_failed/.test(state().state); }, 'capture open again');
+    assert.strictEqual(state().state, 'open', JSON.stringify(state()));
+    assert.strictEqual(state().restore_mode, 0);
+    await command('stop');
+    await until(function () { return state().state === 'closed'; }, 'stop restore');
+    assert.strictEqual(await helper.getLevel(), 0);
+    assert.strictEqual(daemon.exitCode, null, 'dlt-daemon must survive');
+    console.log('ok the records a restore leaves give the same baseline again');
 })().catch(function (err) {
     console.error(err.stack);
     children.forEach(function (c) { if (c.out) console.error('--- ' + c.spawnargs.join(' ') + '\n' + c.out); });

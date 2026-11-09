@@ -72,13 +72,24 @@ var fileMode = require('./file_mode.js');
  * first edit of any other build needs --unproven: its sites pass the
  * locator's checks, but no car has run it patched. stock: the shipped bytes
  * at every offset any version of this tool writes in it, for a revert
- * without the backup. */
+ * without the backup; the rebuilt file is kept only when its SHA-256 is the
+ * shipped one, so a list that lacks an offset rebuilds nothing. */
 var PROVEN = {
     '5de62156575d737391ea42254e778a97dbbb51f8': {
         version: 'carplay 22.28.3+gitr624+993efc1-r0.14',
         sha256: 'ddb33e33161387c6479c391684b3d019b0de54ecfcee8d6877eca94aa62f3e50',
         stock: [[0x2ba4f0, 'ecf2f7ff'], [0x2a20b0, Buffer.from(locator.SINK_STOCK, 'latin1').toString('hex')], [0x18176c, 'e8effdffff'],
                 [0x20ca32, 'ea0000006e000000'], [0x20ca54, '8007000084030000'], [0x20ca66, '0000000064020000'], [0x20ca74, '0e0200000202c000']],
+    },
+    /* Confirmed on a G07 X7 (variant 7) through CarPlay's Patch button
+     * (issue #95), from its probe output. stock holds the sink, self-start
+     * and pixel-size bytes the probe shows; the variant slot and the other
+     * three geometry immediates are not known, so this build is reverted
+     * from our backup only. */
+    '389c1d0536f8cc9283c156410f2f2634a9f952c0': {
+        version: 'carplay 21.27.4',
+        sha256: 'fb5d6b179ad4f62a968697d21e84dbb80adc1ad8e618a6f02c6a9a0467aca1ac',
+        stock: [[0x29bb10, Buffer.from(locator.SINK_STOCK, 'latin1').toString('hex')], [0x1802dc, 'e8effdffff'], [0x20b484, '8007000084030000']],
     },
 };
 
@@ -508,8 +519,8 @@ function cmdRevert(target, yes, force, dropBackup) {
     var bak = backupPath(target);
     var cur = readTarget(target), p;
     try { p = restorePlan(target, cur, classify(cur)); } catch (e) { p = { err: e.message }; }
-    if (p.err) die(fs.existsSync(bak) ? 'backup ' + bak + ' is not a verified original (' + p.err + '), and ' + target + ' is not a proven build to rebuild; refusing to restore it'
-        : 'no backup at ' + bak + ', and ' + target + ' is not a proven build to rebuild; cannot revert');
+    if (p.err) die(fs.existsSync(bak) ? 'backup ' + bak + ' is not a verified original (' + p.err + '), and ' + target + ' cannot be rebuilt from its shipped bytes; refusing to restore it'
+        : 'no backup at ' + bak + ', and ' + target + ' cannot be rebuilt from its shipped bytes; cannot revert');
     var b = p.b, orig = b.buf;
     if (cur.equals(orig)) {
         if (modeOnly(target, cur, p)) repairMode(target, yes);

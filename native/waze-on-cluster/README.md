@@ -622,12 +622,20 @@ verified full backup. `patch/carplay_locate.js` finds each edit's site in the
 build by its code and data and checks it before any write, so the patch
 applies to any carplay build in which every site is found exactly once and
 passes its cross-checks; a build where one does not is left alone, with the
-reason. The install patches only the proven build; another build is a conflict
+reason. The install patches only a proven build; another build is a conflict
 until CarPlay's Patch button (or `apply --unproven`) patches it once. `carplay_patch.js
 probe` (`woc-patch.sh probe`) shows where the sites are in a binary and
-whether it is patchable, without writing. The build the patch was proven on,
-carplay 22.28.3, also has to match its shipped SHA-256 before the first edit.
-Its sites:
+whether it is patchable, without writing. A proven build also has to match
+its shipped SHA-256 before the first edit:
+
+| carplay | build-id | sha256 |
+|---|---|---|
+| 22.28.3 | `5de62156575d737391ea42254e778a97dbbb51f8` | `ddb33e33161387c6479c391684b3d019b0de54ecfcee8d6877eca94aa62f3e50` |
+| 21.27.4 | `389c1d0536f8cc9283c156410f2f2634a9f952c0` | `fb5d6b179ad4f62a968697d21e84dbb80adc1ad8e618a6f02c6a9a0467aca1ac` |
+
+21.27.4 was confirmed on a G07 X7 through CarPlay's Patch button
+([#95](https://github.com/robertnisipeanu/idrive-apps/issues/95)). The
+sites in carplay 22.28.3:
 
 | Edit | What it does | Where (carplay 22.28.3) |
 |---|---|---|
@@ -712,8 +720,8 @@ over a file of its own build. **Never `systemctl stop` or `restart` aapd.**
   file to be the shipped one; another build needs `--unproven` (Android
   Auto's Patch button passes it, the install does not). Removal restores both
   files.
-- Every revert works from our verified backup; on the proven builds
-  (carplay 22.28.3, aapd 22.39.3 and its aapd.conf) also without one, when
+- Every revert works from our verified backup; on carplay 22.28.3, aapd
+  22.39.3 and its aapd.conf also without one, when
   an edit of ours reads in the file, from its own shipped content, kept only
   when it is the shipped file whole. A file with nothing of ours in it is
   left as it is. Each file is written with its original's mode and owner whatever
@@ -767,16 +775,21 @@ a root service, so it starts only after a reboot following its install.
 
 `waze-on-cluster-capture.service` sends BMW's DLT control request (service
 `0xf13`, as `dlt-control -u -z 1`) over `/run/dlt-files/dlt-ctrl.sock`, waits
-for the acknowledgement and checks the TCP 3490 listener through procfs. It
-never edits DLT configuration or restarts CarPlay. It refuses unless a DLT
-client is registered, the listener is closed and the newest state record in
-`/run/logntrace/` says unambiguously whether tracing was OFF or BUFFER. It
-records ownership under `/run/woc-dlt-capture` before turning tracing on, and
-restores the recorded mode at the deadline, on stop and in `ExecStopPost`
-(also after SIGKILL). A failed restore shows as `restore_failed` in the app,
-is retried every 5 s and blocks a new capture. DLT is shared ECU-wide:
-restoring closes its TCP clients, and no other tracing tool should run during
-a capture.
+for the acknowledgement and checks the TCP 3490 listener through procfs. A
+default log level below INFO (the log-and-trace manager sets OFF whenever it
+turns tracing off) is set to INFO for the window (service `0x11`, as
+`dlt-control -u -d 4`); otherwise most applications send nothing. It never
+edits DLT configuration or restarts CarPlay. It refuses unless a DLT client is
+registered, the listener is closed and the newest mode record in
+`/run/logntrace/` says unambiguously whether tracing was OFF or BUFFER: the
+daemon's (`<lifecycle>_dltd.idlt`) or the log-and-trace manager's
+(`<lifecycle>_LTM.idlt`, after a resume often the only one), which must agree
+with the daemon's newest. It records ownership under `/run/woc-dlt-capture`
+before changing anything, and restores the recorded mode and default log level
+at the deadline, on stop and in `ExecStopPost` (also after SIGKILL). A failed
+restore shows as `restore_failed` in the app, is retried every 5 s and blocks
+a new capture. DLT is shared ECU-wide: restoring closes its TCP clients, and no
+other tracing tool should run during a capture.
 
 ## Verified, and open
 

@@ -72,7 +72,9 @@ paths name, where each site is, how it reads,
 and `patchable: yes` or `no` with every reason; it never writes.
 `collect-logs.sh` includes its output.
 
-**Proven builds**, listed by build-id in `carplay_patch.js`: the first edit
+**Proven builds**, listed by build-id in `carplay_patch.js` (carplay
+22.28.3, and 21.27.4, confirmed on a G07 X7 through CarPlay's Patch button,
+[#95](https://github.com/robertnisipeanu/idrive-apps/issues/95)): the first edit
 needs the whole file to be the shipped one, and any other content reads as
 modified by something else. Another build counts as pristine when all four
 sites read stock, but its first edit needs `apply --unproven`: its sites pass
@@ -91,7 +93,8 @@ IC_HIGH start path needs more than a variant-7 car has, fails there at every
 start. Edit 3 runs only on the phone's `onSuggestUi` event, Edit 2 only when
 the second stream starts.
 
-The offsets and bytes below are those of the build the patch was proven on:
+The offsets and bytes below are those of carplay 22.28.3, the build the
+patch was first proven on:
 
 | | |
 |---|---|
@@ -466,7 +469,7 @@ pending, which the Store shows.
 | a change already pending | nothing (still reports the restart); after a removal's revert, applies again (a build outside the proven list stays reverted: a conflict) | a pending apply is undone (nothing pending); a pending revert becomes the removal's; our backup goes |
 | a patch of ours plus another tool's edit elsewhere | updates ours, keeps theirs | reverts ours, keeps theirs, drops our backup |
 | a build with an edit site not found or not recognised | nothing: a conflict | with our verified backup of the same build differing from it (`restorable`), writes the backup whole (pending) and drops it; else nothing |
-| a proven build with one of our edits and no backup of ours to trust | nothing: a conflict | rebuilds it from its shipped bytes (pending) |
+| a proven build with one of our edits and no backup of ours to trust | nothing: a conflict | rebuilds it from its shipped bytes (pending); carplay 21.27.4, whose shipped bytes are not all listed: the removal is refused (exit 1) |
 | another build with one of our edits and no backup of ours to trust | nothing: a conflict | nothing: the removal is refused (exit 1) |
 | a proven build modified by something else, none of our edits in it | nothing: a conflict | nothing |
 | `carplay.service` starting another program (an `ExecStart` in a unit or drop-in under `/etc` or `/run/systemd/system`) | nothing: a conflict | reverts our patch |
@@ -488,7 +491,7 @@ recovery.
 **Removal.** The Store removes the app, then the tool. After `deactivate`
 the deploy tool stops and removes the tool's units, recmgr entries and
 `/var/opt/waze-on-cluster`; the renderer releases the map's slot, and the
-capture restores the DLT tracing mode as it stops.
+capture restores the DLT tracing mode and default log level as it stops.
 
 ## Reversibility
 
@@ -522,7 +525,8 @@ bytes: the shipped bytes of every offset any version of this tool writes in
 it (`PROVEN[...].stock`) are written over the target, and the result is
 kept only when its SHA-256 is the shipped file's. A proven build with none
 of our edits in it is left as it is, and reads `restorable: no`. Another
-build still needs a verified backup.
+build still needs a verified backup, and so does carplay 21.27.4: its list
+lacks the variant slot and three of the geometry immediates.
 
 `status` prints `restorable: yes` when the revert would change the target,
 else `no` with why. Every write is an atomic rename, with the original's
@@ -1071,8 +1075,8 @@ the count and the restore. With nothing wrong this is a stat per file.
 With nothing to restore the step's own work takes under 0.15 s; the rest
 of its time is Node's start-up. A restore reads the
 backup, checks it against the SHA-256 its record took when it was made (a
-backup without its record only when it is the shipped file of the proven
-build: carplay 22.28.3, aapd 22.39.3 and its aapd.conf, by the patchers'
+backup without its record only when it is the shipped file of a proven
+build: carplay 22.28.3 or 21.27.4, aapd 22.39.3 and its aapd.conf, by the patchers'
 tables), and checks that the binary is the backup's build (the same size and GNU
 build-id, or, without a build-id, at most the patcher's bound of bytes
 apart); then, under the remount lock, with `/` read-write only for the
@@ -1158,8 +1162,8 @@ Wi-Fi and Bluetooth) so neither phone has a session to crash in, then over
 SSH run `sh /var/opt/waze-on-cluster/current/woc-patch.sh revert` (CarPlay)
 and `... woc-patch.sh aa-revert` (Android Auto: aapd and aapd.conf) and
 restart the head unit. `status` and `aa-status` show what is on disk first.
-Both reverts work without our backups on the proven builds, from each
-file's own shipped content (above).
+Both reverts work without our backups on carplay 22.28.3 and aapd 22.39.3,
+from each file's own shipped content (above).
 
 **After a factory reset.** The reset wipes `/var/opt/public` and
 `/var/opt/personal`: the app and the Store go. The tool, its patches, its
@@ -1192,7 +1196,9 @@ repository carries no BMW binary.
   (no BMW bytes), every site found, also at other offsets, addresses and code
   order and in its patched state; a signature found twice refused as
   ambiguous; damaged sites refused with their reason; apply, verify, probe
-  and a byte-exact revert on a build outside the proven list. With
+  and a byte-exact revert on a build outside the proven list; a file with
+  carplay 21.27.4's build-id but not its shipped bytes read as proven, its
+  first edit refused, and that build's stock bytes as its probe reads them. With
   `CARPLAY_BIN`, the sites are the offsets above.
 - `mutation_test.js` (`CARPLAY_BIN`): the reference build perturbed in
   memory the way another build could differ (other addresses, a duplicated

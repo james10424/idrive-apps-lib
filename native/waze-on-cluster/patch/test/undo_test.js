@@ -127,7 +127,7 @@ try {
     fs.writeFileSync(tgt, elsewhere);
     r = run(['revert', '--target', tgt, '--yes']);
     ok('patched with another change outside the sites, no backup: not the shipped file once rebuilt, so refused, nothing written', r.code !== 0 &&
-        /not a proven build to rebuild/.test(r.out) && fs.readFileSync(tgt).equals(elsewhere), r.out);
+        /cannot be rebuilt from its shipped bytes/.test(r.out) && fs.readFileSync(tgt).equals(elsewhere), r.out);
     /* A site another tool changed, none of ours, no backup: nothing of ours
      * to undo, so it is left as it is. */
     var foreignSite = Buffer.from(REF);

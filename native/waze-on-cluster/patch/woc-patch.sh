@@ -23,9 +23,9 @@
 #   woc-patch.sh aa-status                      # Android Auto's patch: aapd and aapd.conf
 #   woc-patch.sh aa-revert                      # restore both
 #
-# revert and aa-revert restore from our verified backups; on the proven
-# builds (carplay 22.28.3, aapd 22.39.3 and its aapd.conf) they also work
-# without them, from each file's own shipped content.
+# revert and aa-revert restore from our verified backups; on carplay
+# 22.28.3, aapd 22.39.3 and its aapd.conf they also work without them, from
+# each file's own shipped content.
 #
 # After apply/revert, carplay must start again to load the new binary. This
 # script does NOT stop or start carplay (recmgr and MainApp timing are the

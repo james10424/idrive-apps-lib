@@ -1,7 +1,7 @@
 {
   "id": "waze-on-cluster",
   "kind": "tool",
-  "version": "0.9.3",
+  "version": "0.9.5",
   "license": "GPL-3.0-or-later",
   "title": "Waze on cluster",
   "description": "Shows the CarPlay or Android Auto map on the instrument cluster: a root helper applies the reversible carplay and aapd patches where each is supported, and the capture, running from boot, decodes the map's H.264 and draws it through the cluster renderer whenever the stream flows",
