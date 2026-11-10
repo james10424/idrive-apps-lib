@@ -101,6 +101,7 @@ int main()
         taking.name = "hud"; taking.slot = 0x323; taking.scene_id = 0x01000400; taking.take_over_stock = true;
         ok("hud: a take-over from the stock HMI refused", !hud_rules(&taking, &err));
     }
+    ok("shipped: the HUD's own scene id (the map's), shown with the panel", shipped("hud_scene_id") == "0x010004f0");
     ok("shipped: a hold", shipped("guide_hold") == "1" && load({}, &t, &err) && t.size() == 2 && err.empty());
     {
         std::vector<uint64_t> allowed;
