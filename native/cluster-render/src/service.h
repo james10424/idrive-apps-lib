@@ -43,6 +43,9 @@ struct ServiceConfig {
     std::string backend = "id7";
     /* The mapping guard's file (guard.h); empty: no guard. */
     std::string guard_path;
+    /* Where the scene files of targets that take them come from: under
+     * /var/opt/, root's (scene_file.h). */
+    SceneFiles scene_files;
     std::string version, boot_id;
 };
 

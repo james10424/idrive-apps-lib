@@ -88,6 +88,12 @@ Last run: **0 failures** with `--renderer`, and 0 failures with `--someip 801`.
 | `createTexture2DBuffer(mipLevelCount, width, height, format)` | smoke: `(1, 64, 32, RGBA8)` reports 64×32, 1 level | VERIFIED |
 | `Texture2DBuffer::setData(data, mip, x, y, w, h)` | smoke: full and sub-rect succeed, out-of-bounds fails with "updated subregion exceeds the size of the target mipLevel" | VERIFIED |
 | Renderer objects | smoke `--renderer`: `RendererConfig`, `DisplayConfig` (IVI surface/layer round trip, window rectangle), `RamsesRenderer` construction | VERIFIED (no display created) |
+| Scene files: `ResourceFileDescription(const char*)` with `add(const Resource*)`, `ResourceFileDescriptionSet` with `add`, `RamsesClient::saveSceneToFile(scene, file, set, compress)`, `loadSceneFromFile(file, set)` | `make test-ramses`: a scene of nodes, meshes, a camera, two passes and a data object saved with its effect and arrays in a resource file, loaded back with its scene id, published; the descriptions kept until the scene is destroyed. One impl pointer each (upstream), within the 64 bytes reserved | VERIFIED |
+| `loadSceneFromFile` makes client resource objects | `make test-ramses`: one more resource (`ResourceIterator`) after loading that file, one fewer after destroying it and the scene; loading it again makes no more | VERIFIED |
+| `SceneObjectIterator(scene, type)`, `ResourceIterator(client, type)`, `RamsesObject::getType`, `isOfType` (a type or a base), `Scene::findObjectByName`, `RamsesClient::findObjectByName` (finds a scene by name) | `make test-ramses`: every object of the loaded scene by kind, the loaded scene and its objects found by name | VERIFIED |
+| `ERamsesObjectType`, `EEffectInputDataType` | values not reconstructed (32-bit enums, as the library's); learned at run time (`src/graph_ramses19.cpp`): a probe effect's 11 uniforms through `UniformInput::getDataType`, probe objects' `getType`, the bases Node and Resource by `isOfType`. `make test-ramses`: 11 distinct uniform types, 5 distinct data object types; node 9, mesh 15, perspective 19, orthographic 20, render pass 71, resource 54 | VERIFIED |
+| `Scene::createDataInt32`, `createDataVector3f`, `DataInt32`, `DataVector3f` | probe objects made; their `setValue` | VERIFIED made; `setValue` INFERRED (upstream signatures, exported) |
+| `Appearance::setInputValueInt32`/`Vector2i`/`Vector3i`/`Vector4i`/`Matrix22f`/`Matrix33f(input, count, values)` | exported (`check-imports`), upstream signatures; `make test-ramses` exercises the vec4 and float setters only | INFERRED |
 
 ## ERamsesCommunicationUser
 
@@ -173,7 +179,7 @@ INFERRED: GeniviAdapter and nv_md use the navi users. No binary passes 801.
 
 ### Recommendation for our producer: `enableSomeIPCommunication(801)`
 
-- **VERIFIED: HU stack.** In an emulator of the unit, user 1 fails in the MGU lib with "compiled without useSomeIP_IC" and then crashes, so IC-stack users (1, 101–110, 401–404, 802, 803, 901) are out.
+- **VERIFIED: HU stack.** On a test unit, user 1 fails in the MGU lib with "compiled without useSomeIP_IC" and then crashes, so IC-stack users (1, 101–110, 401–404, 802, 803, 901) are out.
 - **VERIFIED: the real lib accepts 801:** "Starting Ramses Client Application: …_MGUTestUserConnectingToAll", "Use SomeIPConnectionSystemHU", in the smoke run with `--someip 801`, no connect.
 - **VERIFIED: its own instances are unique.** SR3, SP4, RC5, RP5 and PI5 belong to no other participant, so they do not collide with HU_HMI (HmiMain3D), SUA or the navi users.
 - **VERIFIED: every one of its instances is in `vsomeip_gen.json`:**
@@ -236,5 +242,6 @@ Upstream 25.0.0 is the same API family: enums with string tables have identical 
 
 - **Renderer events.** `RamsesRenderer::dispatchEvents(IRendererEventHandler&)` and `RamsesClient::dispatchEvents(IClientEventHandler&)` are not declared: their vtable order is not checked. A renderer built on these headers has to retry `subscribeScene`/`mapScene`/`showScene` instead of waiting for events. INFERRED: undispatched events queue up.
 - **Not exercised:** `RamsesRenderer::createDisplay` and `doOneLoop`/`startThread`. There is no GPU or Wayland compositor in the test container.
-- **Not exercised by the smoke test:** `RamsesFramework::connect` over SOME/IP, which needs the unit's routing manager. Over TCP it runs in `make test-ramses`, and over SOME/IP in an emulator of the unit (participants 5 and 801).
-- **Undeclared:** `UniformInput::getDataType` / `AttributeInput::getDataType` (return enum not checked) and `Scene::saveToFile` (in 19 it is `RamsesClient::saveSceneToFile`).
+- **Not exercised by the smoke test:** `RamsesFramework::connect` over SOME/IP, which needs the unit's routing manager. Over TCP it runs in `make test-ramses`, and over SOME/IP on a test unit (participants 5 and 801).
+- **Undeclared:** `AttributeInput::getDataType`, and the values of `ERamsesObjectType` and `EEffectInputDataType` (learned at run time, above).
+- **`make test-ramses` for scene files** last ran on another build of 19.0.14 (BuildID `f79159f66064ee495ae9cfde35971fe71db8116f`), whose exports include every symbol in `libramses19.symbols`; the imports are checked against this list.

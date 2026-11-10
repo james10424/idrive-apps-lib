@@ -13,7 +13,7 @@ node release/release.js check [<id>...]               # build twice, compare byt
 node release/release.js versions <base>               # a pull request's version and CHANGELOG checks
 node release/release.js stamp [<id>...] [--dry-run]   # next versions into the tree, the release commit
 node release/release.js publish [<id>...|--stamped] [--dry-run]  # (GitHub Actions) new versions, then the catalog
-MGU_PUBLISH=dir:<folder> node release/release.js publish   # a local catalog (emulator, USB stick)
+MGU_PUBLISH=dir:<folder> node release/release.js publish   # a local catalog (test unit, USB stick)
 node release/test/release_test.js
 ```
 
@@ -45,7 +45,12 @@ entry's `artifact.url` is the asset's release download
 this repository is public, which a car without a GitHub sign-in downloads
 without GitHub's API and its rate limit, and the asset's API URL while it
 is private. `publish` lists the entries it carries over the same way, and
-publishes the catalog when only that changed.
+publishes the catalog when only that changed. An app's `icon` is
+`<id>.png`, an asset of the release `catalog` beside `catalog.json`, with
+its `iconSha256`: the PNG its staged tree's `rhmiData/application.json`
+names on its first entry point (what the car's app list shows), uploaded
+by the publish of that version. The Store shows it while the app is not
+installed.
 
 **Languages.** An entry's `texts` is its title and description in other
 languages, from `release/texts/<code>.json`, one file per language of the

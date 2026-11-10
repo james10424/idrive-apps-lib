@@ -39,21 +39,34 @@
  *
  * The sites are found in each build by carplay_locate.js; a build where any
  * of them is not found, or reads as neither stock nor this patch, is refused.
- * The first edit of a build outside the proven list needs --unproven. apply
+ * The first edit of a build outside the proven list needs --unproven, and so
+ * does every apply on a car whose cluster coding is not the proven
+ * KI_KOMBI_VARIANT 7 or cannot be read (aapd_patch.js readCoding). apply
  * is refused on a head unit that refuses our parts (head_unit.js), whatever
  * the flags; revert works on any.
  * All four edits are reversible from a verified full backup of the original
  * binary.
  *
+ * The patch record (patch_record.js) says proven: true only for a proven
+ * build on a variant-7 car that has run patched healthy on this car. The
+ * first patch of such a build is recorded proven: false with trial: true, as
+ * is a proven build's patch applied while the coding cannot be read; boot
+ * recovery's watcher turns it into proven: true once carplay has run it
+ * healthy in a clean boot (recovery.js). A record that already says proven: true without
+ * trial (a patch that ran healthy, or one written before trial existed) keeps
+ * it across later applies, and a revert of such a patch records healthy:
+ * true, which the next apply of the same build takes as proven.
+ *
  * Node 8.16.2 on the unit, no dependencies.
  *
- *   carplay_patch.js status [--target <file>]
+ *   carplay_patch.js status [--target <file>] [--coding <shm>]
  *   carplay_patch.js probe  [<file>]
- *   carplay_patch.js apply  --panel high|mid [--sink <url> | --capture <fifo>] [--res WxH|stock] [--safe WxH+X+Y|full] [--target <file>] [--unproven] [--yes]
+ *   carplay_patch.js apply  --panel high|mid [--sink <url> | --capture <fifo>] [--res WxH|stock] [--safe WxH+X+Y|full] [--target <file>] [--coding <shm>] [--unproven] [--yes]
  *   carplay_patch.js revert [--target <file>] [--yes] [--drop-backup]
  *   carplay_patch.js verify [--target <file>]
  *
- * Default target /usr/bin/carplay. This edits the file by atomic rename, not
+ * Default target /usr/bin/carplay, coding $WOC_CODING or
+ * /dev/shm/rawcodingdata. This edits the file by atomic rename, not
  * the running process, which keeps the old binary until carplay next starts.
  * probe only reads.
  */
@@ -107,6 +120,36 @@ var EDITS = ['variant', 'sink', 'selfstart', 'res'];
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 function die(msg) { process.stderr.write('error: ' + msg + '\n'); process.exit(1); }
 function hex(n) { return '0x' + n.toString(16); }
+
+/* The cluster coding, read and judged as aapd_patch.js does: {variant} or
+ * {err}, and why it is not the proven one (null when it is). Loaded on use,
+ * so boot recovery, which loads this file for its backup check, does not
+ * load the Android Auto patcher. */
+function readCoding(file) { return require('./aapd_patch.js').readCoding(file); }
+function codingRefusal(cd) { return require('./aapd_patch.js').codingRefusal(cd); }
+
+/* The record of a patch has run healthy on this car: a patch record saying
+ * proven without trial (the watcher's, or one written before trial
+ * existed), or a revert's record of such a patch. */
+function vetted(rec) {
+    return !!rec && (rec.healthy === true || (rec.patched === true && rec.proven === true && rec.trial !== true));
+}
+
+/* The record an apply writes (prior: the record before it; cd: the coding
+ * as readCoding read it). Proven only for a proven build on a car with the
+ * proven coding whose patch has run healthy here; the first patch of one is
+ * on trial, and so is a proven build's patch while the coding cannot be
+ * read, so a healthy run can prove it. A car coded otherwise, or a build
+ * outside the proven list, is unproven for good. */
+function applyRecord(prior, provenBuild, cd) {
+    if (provenBuild && !codingRefusal(cd)) return vetted(prior) ? { patched: true, proven: true } : { patched: true, proven: false, trial: true };
+    if (provenBuild && cd.err) return { patched: true, proven: false, trial: true };
+    /* trial: false only to end a trial: record.ensure compares the keys it is given, no others. */
+    return prior && prior.trial ? { patched: true, proven: false, trial: false } : { patched: true, proven: false };
+}
+
+/* The record a revert writes: a patch that ran healthy is remembered. */
+function revertRecord(prior) { return vetted(prior) ? { patched: false, healthy: true } : { patched: false }; }
 
 function backupPath(t) { return t + '.woc-orig'; }
 function metaPath(t) { return t + '.woc-orig.json'; }
@@ -236,9 +279,10 @@ function header(target, buf, c) {
     line('version', c.loc.version || 'unknown');
 }
 
-function cmdStatus(target) {
-    var buf = readTarget(target), c = classify(buf);
+function cmdStatus(target, codingFile) {
+    var buf = readTarget(target), c = classify(buf), cd = readCoding(codingFile);
     header(target, buf, c);
+    line('coding', cd.err ? 'unreadable (' + cd.err + ')' : 'KI_KOMBI_VARIANT ' + cd.variant);
     var p;
     try { p = restorePlan(target, buf, c); } catch (e) { p = { err: e.message }; }
     line('restorable', p.err ? 'no (' + p.err + ')' : p.b.other ? 'no (another build: ' + p.b.other + ')' : !p.out.equals(buf) || modeOnly(target, buf, p) ? 'yes' : 'no');
@@ -399,10 +443,12 @@ function restorePlan(target, cur, c) {
     return { b: b, bc: bc, regionWise: false, out: orig };
 }
 
-function cmdApply(target, panel, capture, sink, res, safe, yes, unproven) {
+function cmdApply(target, panel, capture, sink, res, safe, yes, unproven, codingFile) {
     var hu = headUnit.refused();
     if (hu) die('refusing: ' + hu);
     if (panel !== 'high' && panel !== 'mid') die('--panel must be high or mid');
+    var coding = readCoding(codingFile), codingBad = codingRefusal(coding);
+    if (codingBad && !unproven) die('refusing: ' + codingBad + '; pass --unproven to patch it anyway');
     var wantRes = resFor(panel, res, safe);
     var sinkUrl = sinkUrlFor(capture, sink), slotLen = locator.SINK_STOCK.length;
     if (sinkUrl !== undefined && Buffer.byteLength(sinkUrl, 'latin1') > slotLen)
@@ -473,7 +519,7 @@ function cmdApply(target, panel, capture, sink, res, safe, yes, unproven) {
         put(resText, o, (wantRes ? resWant : orig).slice(o, o + 8));
     });
 
-    var rec = { patched: true, proven: !!PROVEN[loc.buildId] };
+    var rec = applyRecord(record.current(target), !!PROVEN[loc.buildId], coding);
     if (changed.length === 0) {
         repairMode(target, yes);
         process.stdout.write('nothing to do; already in the requested state\n'); record.ensure(target, rec); return;
@@ -516,7 +562,7 @@ function cmdRevert(target, yes, force, dropBackup) {
         });
         process.stdout.write('backup dropped\n');
     }
-    var bak = backupPath(target);
+    var bak = backupPath(target), revRec = revertRecord(record.current(target));
     var cur = readTarget(target), p;
     try { p = restorePlan(target, cur, classify(cur)); } catch (e) { p = { err: e.message }; }
     if (p.err) die(fs.existsSync(bak) ? 'backup ' + bak + ' is not a verified original (' + p.err + '), and ' + target + ' cannot be rebuilt from its shipped bytes; refusing to restore it'
@@ -524,7 +570,7 @@ function cmdRevert(target, yes, force, dropBackup) {
     var b = p.b, orig = b.buf;
     if (cur.equals(orig)) {
         if (modeOnly(target, cur, p)) repairMode(target, yes);
-        process.stdout.write('already at the original; nothing to do\n'); record.ensure(target, { patched: false }); drop(); return;
+        process.stdout.write('already at the original; nothing to do\n'); record.ensure(target, revRec); drop(); return;
     }
     /* Another build (a firmware update replaced carplay and left the old
      * backup behind): restoring would downgrade it. */
@@ -534,14 +580,14 @@ function cmdRevert(target, yes, force, dropBackup) {
             '\n  Pass --force only if you are sure this backup is the right original for it.');
     }
     var regionWise = p.regionWise && !force, out = regionWise ? p.out : orig;
-    if (regionWise && out.equals(cur)) { process.stdout.write('nothing to do: none of the edits is in it; other changes kept\n'); record.ensure(target, { patched: false }); drop(); return; }
+    if (regionWise && out.equals(cur)) { process.stdout.write('nothing to do: none of the edits is in it; other changes kept\n'); record.ensure(target, revRec); drop(); return; }
     process.stdout.write('About to restore ' + (regionWise ? 'the edited regions of ' : '') + target + ' from ' +
         (b.stock ? 'the proven build\'s shipped bytes' : bak) + ' (sha256 ' + b.hash + ')\n');
     if (!yes) die('pass --yes to proceed');
     writeInPlace(target, out);
     var after = readTarget(target), ca = regionWise ? classify(after) : null;
     if (!after.equals(out) || (ca && EDITS.some(function (e) { return !ca.ok || ca[e].state !== 'original'; }))) die('restore verification failed');
-    record.ensure(target, { patched: false });
+    record.ensure(target, revRec);
     process.stdout.write(after.equals(orig) ? 'restored OK. sha256 now ' + b.hash + '\n'
         : 'restored the edited regions; changes outside them kept. sha256 now ' + sha256(after) + '\n');
     if (dropBackup) drop();
@@ -624,6 +670,7 @@ function parseArgs(argv) {
         else if (t === '--drop-backup') a.dropBackup = true;
         else if (t === '--unproven') a.unproven = true;
         else if (t === '--target') a.target = argv[++i];
+        else if (t === '--coding') a.coding = argv[++i];
         else if (t === '--panel') a.panel = argv[++i];
         else if (t === '--capture') {
             /* A missing or flag-shaped value is an error, not "no capture". */
@@ -643,12 +690,13 @@ function main() {
     var a = parseArgs(process.argv.slice(2));
     var cmd = a._[0];
     var target = a.target || '/usr/bin/carplay';
-    if (cmd === 'status') { cmdStatus(target); line('end', 'complete'); }
+    var coding = a.coding || process.env.WOC_CODING || '/dev/shm/rawcodingdata';
+    if (cmd === 'status') { cmdStatus(target, coding); line('end', 'complete'); }
     else if (cmd === 'probe') cmdProbe(a.target || a._[1] || '/usr/bin/carplay');
-    else if (cmd === 'apply') cmdApply(target, a.panel, a.capture, a.sink, a.res, a.safe, a.yes, a.unproven);
+    else if (cmd === 'apply') cmdApply(target, a.panel, a.capture, a.sink, a.res, a.safe, a.yes, a.unproven, coding);
     else if (cmd === 'revert') cmdRevert(target, a.yes, a.force, a.dropBackup);
     else if (cmd === 'verify') cmdVerify(target);
-    else { process.stderr.write('usage: carplay_patch.js status|probe|apply|revert|verify [--target <file>] [--panel high|mid] [--capture <fifo> | --sink <url>] [--res WxH|stock] [--safe WxH+X+Y|full] [--unproven] [--yes] [--force] [--drop-backup]\n'); process.exit(2); }
+    else { process.stderr.write('usage: carplay_patch.js status|probe|apply|revert|verify [--target <file>] [--coding <shm>] [--panel high|mid] [--capture <fifo> | --sink <url>] [--res WxH|stock] [--safe WxH+X+Y|full] [--unproven] [--yes] [--force] [--drop-backup]\n'); process.exit(2); }
 }
 
 module.exports = { trustedBackup: trustedBackup, PROVEN: PROVEN };

@@ -95,6 +95,12 @@ std::string json_quote(const std::string &s);
 /* {"k":v,...} from pairs whose values are already JSON (json_quote a string). */
 std::string json_object(const std::vector<std::pair<std::string, std::string>> &kv);
 
+/* A scene edit line's key (PROTOCOL.md "edit"): its kind, --show counted as
+ * --hide and --pass-on as --pass-off, and the rest of the line, up to the
+ * last '=' for the kinds that take a value. A line replaces the kept line
+ * with the same key. */
+std::string edit_key(const std::string &line);
+
 }  // namespace cr
 
 #endif

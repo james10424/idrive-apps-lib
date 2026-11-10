@@ -37,7 +37,7 @@
  * for again, its layers continue from there in the tick that asks: what
  * their buffers hold is what the scene last flushed, and a renderer that
  * subscribes gets the scene whole, as last flushed, from the RAMSES client
- * (VERIFIED in the emulator: sent at the subscription), so a video writes
+ * (VERIFIED on a test unit: sent at the subscription), so a video writes
  * the tiles that differ from it, not the whole frame. That resend is
  * charged to the byte budget when the display takes the scene (resent()).
  *
@@ -50,7 +50,21 @@
  * other targets never get less than the rest, and with no such layer they
  * go exactly as they would without it. Evidence from such a target is
  * logged, never counted towards the cap, and its bytes are not the link's
- * load for the governor, so it never moves the cap. */
+ * load for the governor, so it never moves the cap.
+ *
+ * Scene contents (PROTOCOL.md "Scene files"): a client's scene file on a
+ * target, at most one a target. While one is there and has not failed to
+ * load, the target is wanted, its scene is the file's (Gpu::load), and every
+ * layer on it waits with reason "scene", as below an exclusive layer. The
+ * content's edits (scene_edit.h) stage in the target's one flush a tick; a
+ * scene loaded again gets them all again. When the content comes or goes,
+ * the published scene is stale (Scenes::stale) and the slot manager
+ * publishes the target again: at once while something wants it, else after
+ * the linger, when it is released. A content's file replaced, its scene is
+ * outdated (Scenes::outdated) and published again in place, the target
+ * kept in its slot. The files' sizes are charged to the
+ * budget when the scene is published and when the display takes it again:
+ * the renderer fetches its resources then. */
 #ifndef CRS_COMPOSITOR_H
 #define CRS_COMPOSITOR_H
 
@@ -64,6 +78,8 @@
 #include "graph.h"
 #include "layer.h"
 #include "mesh_layer.h"
+#include "scene_edit.h"
+#include "scene_file.h"
 #include "slots.h"
 #include "stack.h"
 #include "video_layer.h"
@@ -127,6 +143,27 @@ public:
      * flush carries it. */
     void touch(Layer *l);
 
+    /* A scene content, owned by a client (above); 0 with *err when the
+     * target has one already. */
+    uint32_t add_scene(uint64_t owner, int target, const SceneSource &src, bool contend, std::string *err);
+    /* Its file replaced, its edits gone: published again in place
+     * (Scenes::outdated), the target not released. False when id is not
+     * owner's scene content. */
+    bool replace_scene(uint64_t owner, uint32_t id, const SceneSource &src, bool contend);
+    /* The target's scene content (not failed to load); 0: none. */
+    uint32_t scene_on(int target) const { return content(target); }
+    /* A scene content's target; -1: id is none. */
+    int scene_target(uint32_t id) const
+    {
+        auto it = scenes_.find(id);
+        return it == scenes_.end() ? -1 : it->second.target;
+    }
+    /* The scene content's edits if it exists and belongs to owner. */
+    SceneEdits *edits(uint64_t owner, uint32_t id);
+    /* For the status: "on <target>: " its files and edits; empty when id is
+     * none. */
+    std::string scene_text(uint32_t id) const;
+
     /* The layer if it exists and belongs to owner. */
     Layer *layer(uint64_t owner, uint32_t id);
     /* After a change of layer->params: placed and arranged again. */
@@ -145,6 +182,10 @@ public:
      * (INFERRED: the RAMSES client sends the flush's scene actions through
      * vsomeip, which blocks once its queue to the display backs up). */
     void set_slow_flush_ms(int ms) { slow_flush_us_ = (int64_t)ms * 1000; }
+    /* A scene content's edits flush at most once in this long (the
+     * service's tick, 1000 / fps; 0: as they come); lines coming faster
+     * wait for the next. */
+    void set_file_tick_ms(int ms) { file_tick_ms_ = ms; }
     /* How long a fade in or out takes; 0: none. */
     void set_fade_ms(int ms) { fade_ms_ = ms; }
     static const int64_t kFadeStepMs = 50;
@@ -161,8 +202,13 @@ public:
 
     bool publish(const TargetSpec &t, std::string *err) override;
     void unpublish(const TargetSpec &t) override;
-    /* Charges the budget the scene's buffer bytes, layers' and assets'. */
+    /* Charges the budget the scene's buffer bytes, layers' and assets', or
+     * a file scene's files. */
     void resent(const TargetSpec &t, int64_t now_ms) override;
+    /* A scene content came or went since the target's scene was published. */
+    bool stale(const TargetSpec &t) const override;
+    /* The published file scene's content has another file since. */
+    bool outdated(const TargetSpec &t) const override;
 
 private:
     struct Entry {
@@ -179,8 +225,23 @@ private:
         std::unique_ptr<Asset> asset;
         uint64_t owner = 0;
     };
+    struct SceneEntry {
+        uint64_t owner = 0;
+        int target = 0;
+        SceneSource src;
+        bool contend = false;
+        std::string error;   /* the file did not load: the content wants nothing */
+        SceneEdits edits;
+        uint32_t serial = 1;   /* its file's: one more each replacement */
+    };
     struct Target {
         std::unique_ptr<Graph> graph;
+        /* Or the scene of a scene content's file: which content's, its
+         * serial, and its files' bytes. */
+        std::unique_ptr<FileScene> file;
+        uint32_t file_of = 0, file_serial = 0;
+        uint64_t file_bytes = 0;
+        int64_t file_flush_ms = -1;   /* its edits' last flush */
         Arrangement arr;
         bool dirty = false;    /* changed outside a layer's stage(): flush */
         uint64_t tag = 0;
@@ -192,10 +253,20 @@ private:
         int64_t fade_ms = 0, applied_ms = 0;
         bool fading_out = false;
         std::vector<uint32_t> last_drawn;
-        bool last_contend = false, last_guide_hold = true;
+        bool last_contend = false, last_guide_hold = true, last_yield = true;
     };
 
     uint32_t admit(uint64_t owner, int target, size_t pixel_bytes, std::string *err);
+    /* The target's scene content that has not failed to load; 0: none. */
+    uint32_t content(int target) const;
+    /* Flushes the target's scene, the evidence of a refusal or a slow one
+     * for the governor. */
+    bool flush(int ti, Target &t, int64_t now_ms);
+    /* Stages the scene content's due edits into the target's file scene and
+     * flushes it. */
+    void render_file(int ti, Target &t, int64_t now_ms);
+    /* bytes the renderer fetches now, charged to the target's budget. */
+    void charge(int ti, uint64_t bytes, int64_t now_ms);
     /* The budget the target's writes spend: the HUD's share for a share
      * target. */
     crk::UploadPacer &pacer_for(int target);
@@ -223,6 +294,7 @@ private:
     crk::UploadPacer pacer_;
     crk::UploadPacer share_;
     int64_t slow_flush_us_ = 150000;
+    int64_t file_tick_ms_ = 0;
     int fade_ms_ = 0;
     /* Bytes written this second, flushed or not: the link counts as
      * carrying load (for the governor's evidence and healthy time) from
@@ -235,6 +307,7 @@ private:
     int atlas_fx_ = 0, block_fx_ = 0, image_fx_ = 0;
     std::map<uint32_t, Entry> layers_;
     std::map<uint32_t, AssetEntry> assets_;
+    std::map<uint32_t, SceneEntry> scenes_;
     std::vector<Target> targets_;
     uint32_t next_id_ = 1;
     uint64_t seq_ = 0;

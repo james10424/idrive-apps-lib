@@ -27,7 +27,10 @@
  *   since the scene's last flush; the renderer's resend of the whole scene
  *   is charged to the byte budget, a new scene's not;
  * - layers keep their content across their target's scene going and
- *   coming back (another target with the same scene id taking it);
+ *   coming back (another target with the same scene id taking it); the
+ *   panel on its own scene id drawn and shown with the HUD, and after its
+ *   id is refused, on the HUD's id, drawn again from its layers in that
+ *   id's scene once the HUD lets it go;
  * - effects compile or are refused at creation; uniforms and u_time;
  * - the limits: 64 layers a client and 96 in all; 96 small layers changing
  *   every tick, far past the budget, written within it, each an even share;
@@ -102,12 +105,20 @@ struct Rig {
     int64_t now = 50000;
     int map = 0, panel = 1, hud = 2;
 
-    explicit Rig(uint64_t budget = 0, CompositorLimits lim = CompositorLimits(), bool share_hud = false)
+    /* own_panel: the panel on its own scene id, falling back to the HUD's,
+     * as cluster-render's main sets it. */
+    explicit Rig(uint64_t budget = 0, CompositorLimits lim = CompositorLimits(), bool share_hud = false,
+                 bool own_panel = false)
     {
         TargetSpec m;
         m.name = "map"; m.slot = 0x100; m.scene_id = 0x010004f0; m.width = W; m.height = H; m.linger_ms = 2000;
         TargetSpec p;
         p.name = "panel"; p.slot = 0x203; p.scene_id = 0x01000400; p.width = 1920; p.height = 720; p.linger_ms = 2000;
+        if (own_panel) {
+            p.scene_id = 0x010004f8;
+            p.fallback_scene_id = 0x01000400;
+            p.strike_limit = 2;
+        }
         TargetSpec h;
         h.name = "hud"; h.slot = 0x323; h.scene_id = 0x01000400; h.width = 800; h.height = 480; h.linger_ms = 2000;
         h.share = share_hud;
@@ -478,6 +489,52 @@ static void failure_hold()
     r.run(100);
     v = video_view(g);
     ok("and then shows the newest frame", g->shown.quads[v.atlas_quad].visible && v.atlas->px == rounded(a));
+}
+
+/* The panel on its own scene id: drawn and shown with the HUD, each in its
+ * own scene; its id refused, on the HUD's id, its scene unpublished, and
+ * drawn again from its layers in a scene of that id once the HUD lets it
+ * go. */
+static void panel_and_hud_together()
+{
+    Rig r(0, CompositorLimits(), false, true);
+    r.comp->set_fade_ms(0);
+    std::string err;
+    const uint32_t pi = r.comp->add_image(2, r.panel, params(Klass::Overlay, R(0, 0, 64, 64)), 64, 64, 30,
+                                          Sampling::Nearest, r.now, &err);
+    const uint32_t hi = r.comp->add_image(3, r.hud, params(Klass::Content, R(0, 0, 8, 8), true), 8, 8, 30,
+                                          Sampling::Nearest, r.now, &err);
+    std::vector<uint8_t> ppx(64 * 64 * 4, 120), hpx(8 * 8 * 4, 33);
+    static_cast<ImageLayer *>(r.comp->layer(2, pi))->update({}, ppx.data(), ppx.size(), &err);
+    static_cast<ImageLayer *>(r.comp->layer(3, hi))->update({}, hpx.data(), hpx.size(), &err);
+    r.step(10);
+    r.slots.on_shown(0x010004f8, r.now);
+    r.slots.on_shown(0x01000400, r.now);
+    r.run(100);
+    FakeGraph *pg = r.g("panel"), *hg = r.g("hud");
+    const auto drawn = [](FakeGraph *g, const std::vector<uint8_t> &px) {
+        if (!g || g->visible().empty())
+            return false;
+        const int buf = g->shown.quads[g->visible().back()].textures["u_image"];
+        return g->shown.buffers[buf].px == px;
+    };
+    ok("own ids: the panel and the HUD shown at once, each drawn in its own scene",
+       pg && hg && pg != hg && r.port.requests == 2 && drawn(pg, ppx) && drawn(hg, hpx) &&
+           r.slots.status(r.panel).state == TargetState::Shown && r.slots.status(r.hud).state == TargetState::Shown);
+    r.slots.on_lost(0x010004f8, "fetch removed", r.now);
+    r.run(2100);   /* asked for again after the removal */
+    r.slots.on_refused(0x010004f8, Refusal::UnknownContent, "E_DCSM_CONTENTID_UNKNOWN", r.now);
+    r.run(3000);
+    ok("fallen back: the panel's scene unpublished, it waits for the HUD's id, the HUD drawn on",
+       !r.g("panel") && r.slots.targets()[r.panel].scene_id == 0x01000400 && r.g("hud") == hg &&
+           r.slots.status(r.hud).state == TargetState::Shown && !r.slots.requested(r.panel) && drawn(hg, hpx));
+    r.comp->remove_owner(3);
+    r.run(2100);
+    r.run(1500);
+    pg = r.g("panel");
+    ok("the HUD's client gone: the HUD released and its scene unpublished, the panel drawn again in a scene of "
+       "the fallback id",
+       !r.g("hud") && pg && r.slots.requested(r.panel) && drawn(pg, ppx) && r.gpu.scenes == 3);
 }
 
 static void image_failure_hides()
@@ -1659,6 +1716,7 @@ int main()
     video_basics();
     packed_motion();
     failure_hold();
+    panel_and_hud_together();
     image_failure_hides();
     exclusive_image_holds();
     image_made_exclusive_while_parked();

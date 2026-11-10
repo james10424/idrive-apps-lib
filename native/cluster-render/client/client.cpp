@@ -2,6 +2,7 @@
  * Copyright (C) 2026 Robert Nisipeanu */
 #include "cluster_render/client.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -71,6 +72,8 @@ void Client::connect_now(int64_t now_ms)
             if ((l.kind == "asset") != (pass == 0))
                 continue;
             queue(layer_json(kv.first, l));
+            if (!l.edits.empty())
+                queue(edits_json(kv.first, l));
             for (const auto &p : l.parts) {
                 queue(p.second.json);
                 if (!p.second.geometry.empty())
@@ -321,7 +324,8 @@ std::vector<std::pair<std::string, std::string>> Client::fields(const char *op, 
         {"x", num(lo.x)},                {"y", num(lo.y)},
         {"visible", flag(lo.visible)},   {"exclusive", flag(lo.exclusive)},
         {"prewarm", flag(lo.prewarm)},   {"contend", flag(lo.contend)},
-        {"guide_hold", flag(lo.guide_hold)}, {"opacity", num(lo.opacity)}};
+        {"guide_hold", flag(lo.guide_hold)}, {"yield", flag(lo.yield)},
+        {"opacity", num(lo.opacity)}};
     if (lo.w && lo.h) {
         kv.push_back({"w", num(lo.w)});
         kv.push_back({"h", num(lo.h)});
@@ -329,8 +333,34 @@ std::vector<std::pair<std::string, std::string>> Client::fields(const char *op, 
     return kv;
 }
 
+std::string Client::edits_json(uint32_t ref, const Layer &l) const
+{
+    std::vector<std::pair<uint64_t, std::string>> lines;
+    for (const auto &kv : l.edits)
+        lines.push_back(kv.second);
+    std::sort(lines.begin(), lines.end());
+    std::string text;
+    for (const auto &line : lines)
+        text += (text.empty() ? "" : "\n") + line.second;
+    return json_object({{"op", json_quote("edit")}, {"ref", num(ref)}, {"lines", json_quote(text)}});
+}
+
 std::string Client::layer_json(uint32_t ref, const Layer &l) const
 {
+    if (l.kind == "scene") {
+        std::string res, sha;
+        for (const std::string &r : l.so.res)
+            res += (res.empty() ? "" : " ") + r;
+        for (const std::string &h : l.so.sha256)
+            sha += (sha.empty() ? "" : " ") + h;
+        return json_object({{"op", json_quote("scene")},
+                            {"ref", num(ref)},
+                            {"target", json_quote(l.so.target)},
+                            {"file", json_quote(l.so.file)},
+                            {"res", json_quote(res)},
+                            {"sha256", json_quote(sha)},
+                            {"contend", flag(l.so.contend)}});
+    }
     if (l.kind == "asset")
         return json_object({{"op", json_quote("asset")},
                             {"ref", num(ref)},
@@ -457,10 +487,54 @@ uint32_t Client::asset(const AssetOptions &ao)
     return add(l);
 }
 
+uint32_t Client::scene(const SceneOptions &so)
+{
+    if (so.file.empty() || so.sha256.size() != so.res.size() + 1)
+        return 0;
+    Layer l;
+    l.kind = "scene";
+    l.so = so;
+    return add(l);
+}
+
+void Client::scene(uint32_t ref, const SceneOptions &so)
+{
+    auto it = layers_.find(ref);
+    if (it == layers_.end() || it->second.kind != "scene" || so.file.empty() || so.sha256.size() != so.res.size() + 1)
+        return;
+    const std::string target = it->second.so.target;   /* set when it is made */
+    it->second.so = so;
+    it->second.so.target = target;
+    it->second.edits.clear();
+    queue(layer_json(ref, it->second));
+    send_now();
+}
+
+void Client::edit(uint32_t ref, const std::string &lines)
+{
+    auto it = layers_.find(ref);
+    if (it == layers_.end() || it->second.kind != "scene")
+        return;
+    size_t at = 0;
+    while (at <= lines.size()) {
+        size_t nl = lines.find('\n', at);
+        if (nl == std::string::npos)
+            nl = lines.size();
+        std::string line = lines.substr(at, nl - at);
+        at = nl + 1;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (!line.empty())
+            it->second.edits[edit_key(line)] = std::make_pair(++edits_, line);
+    }
+    queue(json_object({{"op", json_quote("edit")}, {"ref", num(ref)}, {"lines", json_quote(lines)}}));
+    send_now();
+}
+
 void Client::set(uint32_t ref, const LayerOptions &lo)
 {
     auto it = layers_.find(ref);
-    if (it == layers_.end() || it->second.kind == "asset")
+    if (it == layers_.end() || it->second.kind == "asset" || it->second.kind == "scene")
         return;
     const std::string target = it->second.lo.target;
     it->second.lo = lo;

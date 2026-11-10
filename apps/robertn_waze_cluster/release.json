@@ -1,1 +1,1 @@
-{ "build": "node tools/build.js", "requires": { "waze-on-cluster": "0.9.3" }, "uninstallable": true, "mguHmi": ["ID7"] }
+{ "build": "node tools/build.js", "requires": { "waze-on-cluster": "0.9.10" }, "uninstallable": true, "mguHmi": ["ID7"] }

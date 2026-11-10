@@ -45,6 +45,8 @@ public:
 
     size_t clients() const { return clients_.size(); }
     std::string status_text(int64_t now_ms) const;
+    /* Where the scene files clients name may come from (scene_file.h). */
+    void set_scene_files(const SceneFiles &where) { scene_files_ = where; }
 
 private:
     struct Client {
@@ -53,7 +55,7 @@ private:
         std::string app;
         RecvBuffer in;
         std::string out;
-        std::map<uint32_t, uint32_t> refs;            /* the client's ref -> layer id */
+        std::map<uint32_t, uint32_t> refs;            /* the client's ref -> layer or scene content id */
         std::map<uint32_t, uint32_t> assets;          /* the client's ref -> asset id */
         std::map<uint32_t, std::string> layer_sent;   /* by ref: the state line last sent */
         std::map<std::string, std::string> target_sent;
@@ -71,8 +73,16 @@ private:
     void on_mesh(Client &c, const char *body, size_t n, int64_t now_ms);
     void send(Client &c, const std::string &json);
     void error(Client &c, const std::string &op, uint32_t ref, const std::string &why);
+    /* With the edit line it is about. */
+    void error(Client &c, const std::string &op, uint32_t ref, const std::string &why, const std::string &line);
+    /* A layer of c waiting for the scene file on its target ("scene"): the
+     * scene's ref when it is c's, else its client's app. */
+    std::string scene_reason(const Client &c, uint32_t layer) const;
     void op_layer(Client &c, const cr::Json &j, int64_t now_ms);
     void op_asset(Client &c, const cr::Json &j);
+    /* A scene file on a target (PROTOCOL.md "Scene files"), and its edits. */
+    void op_scene(Client &c, const cr::Json &j);
+    void op_edit(Client &c, uint32_t ref, const cr::Json &j);
     /* set, uniform, bind, part, transform, animate and stop. */
     void op_on_layer(Client &c, const std::string &op, uint32_t ref, Layer *l, const cr::Json &j);
     void op_uniform(Client &c, uint32_t ref, Layer *l, const cr::Json &j);
@@ -81,6 +91,7 @@ private:
     Compositor *comp_;
     SlotManager *slots_;
     std::string backend_;
+    SceneFiles scene_files_;
     int listen_fd_ = -1;
     bool own_path_ = false;
     std::string path_;

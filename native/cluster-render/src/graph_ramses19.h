@@ -12,7 +12,9 @@
  * resources; the passes' render order follows the draw order (plan_passes).
  * Buffers are Texture2DBuffers with one sampler each. Animations are one
  * real-time animation system per scene, made at the first one, played by the
- * renderer. */
+ * renderer; an animation that stops takes the system with it, and the others
+ * are made again in a new one. A scene file is the client library's own
+ * scene and resources, as the file has them. */
 #ifndef CRS_GRAPH_RAMSES19_H
 #define CRS_GRAPH_RAMSES19_H
 
@@ -29,6 +31,14 @@ class UInt16Array;
 
 namespace crs {
 
+/* The library's object types and uniform data types, which its headers do
+ * not give, learned once (graph_ramses19.cpp). */
+struct Ramses19Types {
+    uint32_t node = 0, mesh = 0, persp = 0, ortho = 0, pass = 0, resource = 0;
+    uint32_t data[5] = {};      /* DataFloat, DataInt32, DataVector2f, DataVector3f, DataVector4f */
+    uint32_t uniform[11] = {};  /* float, vec2-4, int, ivec2-4, mat2-4 */
+};
+
 class Ramses19Gpu : public Gpu {
 public:
     explicit Ramses19Gpu(ramses::RamsesClient &client);
@@ -40,6 +50,11 @@ public:
     void drop_effect(int effect) override;
     unsigned attributes(int effect) const override;
     std::unique_ptr<Graph> scene(const TargetSpec &t, std::string *err) override;
+    /* The first one learns the types. */
+    std::unique_ptr<FileScene> load(const TargetSpec &t, const std::string &file, const std::vector<std::string> &res,
+                                    std::string *err) override;
+    /* What the first load learned (for tests). */
+    const Ramses19Types &types() const { return types_; }
 
 private:
     ramses::RamsesClient &client_;
@@ -47,6 +62,8 @@ private:
     const ramses::UInt16Array *idx_ = nullptr;
     std::map<int, ramses::Effect *> effects_;
     int next_ = 1;
+    Ramses19Types types_;
+    bool typed_ = false;
 };
 
 }  // namespace crs

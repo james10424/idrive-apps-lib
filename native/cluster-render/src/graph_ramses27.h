@@ -22,8 +22,8 @@
  * - a scene taken down while its content is offered, or its offer is
  *   stopping, stays published as it was last flushed until the cluster has
  *   accepted the stop (retired, then dropped by drop_retired()), as icwidget
- *   did on the car: unpublished at once, the stand-in cluster in the
- *   emulator logged errors unassigning it. No new scene with its id is built
+ *   did on the car: unpublished at once, a test unit's stand-in
+ *   cluster logged errors unassigning it. No new scene with its id is built
  *   meanwhile: scene() refuses, and the target waits on the slot manager's
  *   ladder. A scene taken down with no offer left (a warm scene, slots.h)
  *   goes at once. */

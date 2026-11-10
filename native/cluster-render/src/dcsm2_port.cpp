@@ -45,8 +45,9 @@ Refusal classify(bool ok, uint32_t status)
         return Refusal::Busy;
     case dcsm::E_DCSM_SLOTID_UNKNOWN:
         return Refusal::NoSlot;
-    case dcsm::E_DCSM_HANDLE_UNKNOWN:
     case dcsm::E_DCSM_CONTENTID_UNKNOWN:
+        return Refusal::UnknownContent;
+    case dcsm::E_DCSM_HANDLE_UNKNOWN:
     case dcsm::E_DCSM_CLIENT_ALREADYREGISTERED:
         return Refusal::Config;
     default:

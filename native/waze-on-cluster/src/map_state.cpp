@@ -13,7 +13,8 @@
 
 namespace woc {
 
-const char *const kMapStateKeys[5] = {"cluster", "hud", "hud_width_pct", "hud_offset_x", "hud_offset_y"};
+const char *const kMapStateKeys[6] = {"cluster",      "hud",          "hud_width_pct",
+                                      "hud_offset_x", "hud_offset_y", "hud_keep_shown"};
 
 namespace {
 
@@ -24,7 +25,7 @@ std::string trim(const std::string &s)
 }
 
 /* A whole number in the key's range: the map on (1) or off (0), 0 or 20-100 %
- * wide, -800..800 px from the centre. */
+ * wide, -800..800 px from the centre, kept shown (1) or not (0). */
 bool valid(const std::string &key, const std::string &value)
 {
     char *end = nullptr;

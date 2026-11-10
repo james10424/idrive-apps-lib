@@ -118,6 +118,32 @@ function hmiOf(c, where) {
     return h;
 }
 
+/* An app's icon, the one the car's app list shows: the PNG its staged
+ * tree's rhmiData/application.json names on its first entry point, in the
+ * first variant group's resourcesPath that has it, else resources/, as
+ * mgu-store's updater looks for it (native/mgu-updater/js/sources.js
+ * entryIcons); { file, sha256 }, or undefined without a PNG of at most
+ * 128 KiB, the most the Store draws. */
+const ICON_BYTES = 128 << 10;
+function appIcon(stagedDir) {
+    const rhmi = path.join(stagedDir, 'rhmiData');
+    const app = readJson(path.join(rhmi, 'application.json')).application;
+    const name = app && Array.isArray(app.entryPoints) && app.entryPoints[0] && app.entryPoints[0].icon;
+    if (typeof name !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/.test(name)) {
+        return undefined;
+    }
+    const dirs = (Array.isArray(app.variantGroups) ? app.variantGroups : [])
+        .map((g) => (g && typeof g.resourcesPath === 'string' ? g.resourcesPath.replace(/^\.\//, '').replace(/\/+$/, '') : ''))
+        .filter((d) => d && d[0] !== '/' && d.split('/').every((x) => x && x !== '.' && x !== '..'))
+        .concat(['resources']);
+    const file = dirs.map((d) => path.join(rhmi, d, name)).find((f) => fs.existsSync(f) && fs.statSync(f).isFile());
+    const b = file ? fs.readFileSync(file) : null;
+    if (!b || b.length > ICON_BYTES || b.slice(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+        return undefined;
+    }
+    return { file, sha256: crypto.createHash('sha256').update(b).digest('hex') };
+}
+
 /* Every releasable component in a repo tree (the working tree or an export). */
 function components(root = REPO) {
     const out = [];
@@ -161,6 +187,7 @@ function components(root = REPO) {
             dir: `apps/${id}`,
             title: appTitle(stagedDir),
             description: pkg.description || '',
+            icon: appIcon(stagedDir),
             release,
             build: manifest ? 'unit' : null,
             requires: requiresOf(release, `apps/${id}/release.json`),
@@ -406,6 +433,11 @@ function catalogEntry(c, file) {
     if (c.texts) {
         entry.texts = c.texts;
     }
+    // an app's icon, published beside the catalog as <id>.png
+    if (c.icon) {
+        entry.icon = `${c.id}.png`;
+        entry.iconSha256 = c.icon.sha256;
+    }
     return entry;
 }
 
@@ -421,6 +453,10 @@ function build(ids, outDir, failed) {
         const entries = [];
         list.forEach((c) => {
             process.stdout.write(`building ${c.id}@${c.version} ... `);
+            // the icon beside the artifact, before the build stages the tree it is in
+            if (c.icon) {
+                fs.copyFileSync(c.icon.file, path.join(outDir, `${c.id}.png`));
+            }
             let file;
             try {
                 file = buildOne(c, exportDir);
@@ -884,6 +920,8 @@ function cmdPublish(ids, dryRun, stamped) {
         e.artifact.url = publishTarget.uploadArtifact(e, path.join(staging, e.artifact.name));
         current.set(e.id, e);
     });
+    // the icons before the catalog that names them
+    uploads.filter((e) => e.icon).forEach((e) => publishTarget.uploadCatalogAsset(path.join(staging, e.icon)));
     const catalogFile = writeCatalog([...current.values()], staging);
     publishTarget.uploadCatalog(catalogFile);
     console.log(`catalog published to ${publishTarget.describe()}`);

@@ -32,8 +32,9 @@
  * render and the state as the render reports it, nothing known or sent
  * while closed or with a render that has no switch, nothing sent while the
  * cluster renderer holds the box shown. Where the map shows (the cluster,
- * the HUD or both, never neither) and the HUD's size slider, place and
- * guard; an asked HUD size the render does not show goes after a moment,
+ * the HUD, both or Off, from the cluster and from both, the HUD's size and
+ * place refused while Off) and the HUD's size slider, place, Keep HUD map
+ * over BMW's pop-ups and guard; an asked HUD size the render does not show goes after a moment,
  * on a failed save and on a render reconnect. CarPlay Wi-Fi: the band patchd reports, 5 GHz or 2.4 GHz, the
  * line under it on 2.4 GHz only, nothing while the band is unknown, from a
  * patchd before it, or with patchd gone.
@@ -307,7 +308,7 @@ test('the turn card checkbox: the asked card until its change ends; the one on d
     c.close();
 });
 
-test('where the map shows: the cluster by default; the HUD and both through the render, patchd saves each change; never neither', async (render, patch) => {
+test('where the map shows: the cluster by default; the HUD and both through the render, patchd saves each change; Off for neither', async (render, patch) => {
     const c = control();
     c.open();
     await until('connected', () => c.connectedRender() && c.connectedPatch());
@@ -336,10 +337,39 @@ test('where the map shows: the cluster by default; the HUD and both through the 
     await until('each saved', () => patch.received.filter((m) => /^(cluster|hud)$/.test(m.cmd)).length === 4);
     assert.deepStrictEqual(patch.received.filter((m) => /^(cluster|hud)$/.test(m.cmd)),
         [{ cmd: 'hud', on: 1 }, { cmd: 'cluster', on: 0 }, { cmd: 'cluster', on: 1 }, { cmd: 'hud', on: 0 }]);
-    /* a render on neither (its own configuration): no choice to show, one to make */
+    /* Off: the cluster off, the HUD stays off, nothing else sent; the stock map back */
+    render.received.length = 0;
+    patch.received.length = 0;
+    c.showOn('off');
+    assert.deepStrictEqual([c.shownOn(), c.clusterOn(), c.hudOn()], ['off', false, false], 'Off at once, before the render answers');
+    await until('off', () => render.cluster === 0 && render.hud === 0 && c.renderStatus.cluster === 0 && c.mapText() === 'Cluster map: Off');
+    assert.deepStrictEqual(render.received, [{ cmd: 'cluster', on: '0' }], 'only the cluster off');
+    await until('off saved', () => patch.received.some((m) => m.cmd === 'cluster'));
+    assert.deepStrictEqual(patch.received.filter((m) => /^(cluster|hud)$/.test(m.cmd)), [{ cmd: 'cluster', on: 0 }]);
+    assert(c.hudText() === 'HUD map: Off' && c.canChooseShownOn() && !c.canChangeHudSize() && !c.canCentreHud(), 'Off: the choice, not the HUD\'s size and place');
+    c.showOn('off');
+    c.setHudSizeStep(6);
+    c.moveHud('left');
+    await sleep(50);
+    assert.deepStrictEqual(render.received, [{ cmd: 'cluster', on: '0' }], 'Off again, the HUD\'s size and place: nothing sent');
+    /* both, then Off from both: each display off, both saved */
+    c.showOn('both');
+    await until('both from off', () => render.cluster === 1 && render.hud === 1 && c.shownOn() === 'both' && c.renderStatus.hud === 1);
+    render.received.length = 0;
+    patch.received.length = 0;
+    c.showOn('off');
+    await until('off from both', () => render.cluster === 0 && render.hud === 0 && c.renderStatus.cluster === 0 && c.renderStatus.hud === 0 &&
+        c.shownOn() === 'off' && c.mapText() === 'Cluster map: Off' && c.hudText() === 'HUD map: Off');
+    assert.deepStrictEqual(render.received, [{ cmd: 'cluster', on: '0' }, { cmd: 'hud', on: '0' }], 'both off');
+    await until('both saved', () => patch.received.filter((m) => /^(cluster|hud)$/.test(m.cmd)).length === 2);
+    assert.deepStrictEqual(patch.received.filter((m) => /^(cluster|hud)$/.test(m.cmd)), [{ cmd: 'cluster', on: 0 }, { cmd: 'hud', on: 0 }]);
+    c.showOn('cluster');
+    await until('the cluster from off', () => render.cluster === 1 && render.hud === 0 && c.shownOn() === 'cluster' &&
+        /^Cluster map: Showing/.test(c.mapText()));
+    /* a render on neither from its own configuration reads as Off, a choice still to make */
     render.cluster = 0;
     render.announce(render.state, render.reason);
-    await until('neither', () => c.shownOn() === null && c.canChooseShownOn());
+    await until('neither', () => c.shownOn() === 'off' && c.canChooseShownOn());
     c.close();
     assert(!c.canChooseShownOn(), 'no choice while the render is not connected');
     assert.deepStrictEqual([c.shownOn(), c.hudText()], [null, 'HUD map: Unavailable']);
@@ -385,6 +415,32 @@ test('the HUD map size as a slider: 5 % steps from 30 to 85 %, Standard at the s
     await until('each one saved', () => patch.received.filter((m) => m.cmd === 'hud-size').map((m) => m.hud_width_pct).join() === '60,85,30');
     c.close();
     assert.deepStrictEqual([c.hudSizeText(), c.hudSizeStep()], ['Size: —', null], 'nothing known while closed');
+});
+
+test('the HUD map over BMW\'s pop-ups: gives way by default; a flip goes to the render and patchd, the render\'s status shows it; ' +
+    'greyed while the HUD is off and for a render without it', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('the HUD off', () => c.renderStatus && c.hudOn() === false);
+    assert.deepStrictEqual([c.hudKeepShown(), c.canKeepHud()], [false, false], 'giving way, greyed while the HUD is off');
+    c.toggleHudKeep();
+    render.hud = 1;
+    render.announce(render.state, render.reason);
+    await until('on', () => c.canKeepHud());
+    assert.strictEqual(render.received.filter((m) => m.hud_keep_shown !== undefined).length, 0, 'nothing sent while greyed');
+    c.toggleHudKeep();
+    await until('kept shown', () => c.hudKeepShown() === true && render.hudKeep === 1);
+    await until('saved', () => patch.map.hud_keep_shown === 1);
+    c.toggleHudKeep();
+    await until('gives way again', () => c.hudKeepShown() === false && patch.map.hud_keep_shown === 0);
+    assert.deepStrictEqual(render.received.filter((m) => m.hud_keep_shown !== undefined), [{ cmd: 'hud', hud_keep_shown: '1' }, { cmd: 'hud', hud_keep_shown: '0' }]);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'hud-keep-shown'), [{ cmd: 'hud-keep-shown', on: 1 }, { cmd: 'hud-keep-shown', on: 0 }]);
+    render.hudKeep = null;
+    render.announce(render.state, render.reason);
+    await until('a render without it', () => c.hudKeepShown() === null && !c.canKeepHud());
+    c.close();
 });
 
 test('an asked HUD size the render does not show: the render\'s own after a moment, at once on a render reconnect; ' +

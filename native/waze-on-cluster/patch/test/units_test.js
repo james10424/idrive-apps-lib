@@ -65,7 +65,17 @@ assert.deepStrictEqual(fw.ExecStart, ['/usr/bin/node /var/opt/waze-on-cluster/cu
 var logs = unit('waze-on-cluster-logs.service');
 assert(list(logs, 'Wants').indexOf('waze-on-cluster-logs-fw.service') >= 0 && list(logs, 'After').indexOf('waze-on-cluster-logs-fw.service') >= 0);
 assert(!(logs.ExecStartPre || []).length && !(logs.ExecStopPost || []).length, 'nothing in the logs service runs as root');
-assert(/^\d+$/.test(unit('waze-on-cluster-journal.timer').OnBootSec[0]) && Number(unit('waze-on-cluster-journal.timer').OnBootSec[0]) >= 60);
+/* The journal service starts about 10 s after boot, so a start the head
+ * unit resets within its first minute still leaves its lines, and nothing
+ * waits for it. */
+var timer = unit('waze-on-cluster-journal.timer');
+assert(/^\d+$/.test(timer.OnBootSec[0]) && Number(timer.OnBootSec[0]) >= 5 && Number(timer.OnBootSec[0]) <= 15, 'OnBootSec=' + timer.OnBootSec);
+assert.deepStrictEqual(timer.AccuracySec, ['1s']);
+/* The firewall unit (root) takes the snapshot of what only root reads before
+ * the logs service starts; a failure of it is no failure of the unit. */
+assert.deepStrictEqual(fw.ExecStartPre, ['-/usr/bin/node /var/opt/waze-on-cluster/current/logs_fw.js prepare',
+    '-/usr/bin/node /var/opt/waze-on-cluster/current/logs_extra.js snapshot']);
+assert(c.files.some(function (f) { return f.path === 'logs_extra.js' && f.from === 'patch/logs_extra.js'; }), 'logs_extra.js installed');
 assert(c.enable.some(function (e) { return e.unit === 'waze-on-cluster-journal.timer' && e.target === 'timers.target'; }));
 assert(c.enable.some(function (e) { return e.unit === 'waze-on-cluster-logs.socket' && e.target === 'sockets.target'; }));
 assert(!c.enable.some(function (e) { return /journal\.service|logs(-fw)?\.service/.test(e.unit); }), 'no service enabled on its own');
@@ -74,7 +84,7 @@ assert(!c.enable.some(function (e) { return /journal\.service|logs(-fw)?\.servic
  * by themselves, are left to run out their window. */
 assert(c.restart.indexOf('waze-on-cluster-journal.service') >= 0);
 assert(c.restart.indexOf('waze-on-cluster-logs.service') < 0 && c.restart.indexOf('waze-on-cluster-logs-fw.service') < 0);
-console.log('ok   journal and logs units: in recmgr, ordered against none of the head unit\'s, started late or on demand, no core dumps, root only in node and the firewall unit');
+console.log('ok   journal and logs units: in recmgr, ordered against none of the head unit\'s, started by a timer 10 s after boot or on demand, no core dumps, root only in node and the firewall unit');
 
 /* On a head unit that refuses it the capture stays up and exits only on a
  * stop, with 0: restarted on a failure only, so a clean stop stays stopped. */

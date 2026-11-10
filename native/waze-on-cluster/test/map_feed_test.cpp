@@ -49,11 +49,16 @@
  *   and shown again it draws the newest picture first; after the renderer
  *   restarts, and on another target, repeats alone bring the picture;
  * - MapFeeds: the HUD off, on beside the cluster (scaled, at most hud_fps),
- *   on panel, its size and place, alone, neither; a still map's repeats keep
+ *   beside the cluster's map on panel, its size and place, kept shown over
+ *   BMW's pop-ups or giving way to them, alone, neither; a still map's repeats keep
  *   both layers, or the HUD alone, shown past stall_ms with no frame whole
  *   and none scaled, and moving again the HUD scales at most hud_fps while
  *   the cluster keeps its rate; a feed made beside the other starts from its
- *   picture; the HUD disabled by the guard. */
+ *   picture; the HUD disabled by the guard;
+ * - Off (neither), from the cluster alone and from both: the map's and the
+ *   HUD's slots and the turn box's hold released, the stock map and box
+ *   shown again, nothing asked of the renderer while off; the cluster, or
+ *   both, again: the next frame shown, the hold back. */
 #include <poll.h>
 #include <signal.h>
 #include <unistd.h>
@@ -121,11 +126,13 @@ struct Rig {
         crs::TargetSpec m, p, g, u;
         m.name = "map"; m.slot = 0x100; m.scene_id = 0x010004f0; m.width = 1088; m.height = 480; m.linger_ms = 1500;
         m.take_over_stock = true;   /* as cluster-render.conf ships it */
-        p.name = "panel"; p.slot = 0x203; p.scene_id = 0x01000400; p.width = 1920; p.height = 720; p.linger_ms = 3000;
+        p.name = "panel"; p.slot = 0x203; p.scene_id = 0x010004f8; p.width = 1920; p.height = 720; p.linger_ms = 3000;
         g.name = "guide_0x105"; g.slot = 0x105; g.scene_id = kGuide; g.width = g.height = 16; g.linger_ms = 0;
         g.take_over_stock = true; g.follows = "map"; g.take_over_contents = {kBox};
         g.strike_limit = 2;
         u.name = "hud"; u.slot = 0x323; u.scene_id = 0x01000400; u.width = 800; u.height = 480; u.linger_ms = 3000;
+        u.yield_slots = {0x322};   /* as cluster-render.conf ships it */
+        u.yield_ms = 1500;
         sc.targets = {m, p};
         if (hud)
             sc.targets.push_back(u);
@@ -279,6 +286,119 @@ static void guide_hold()
     ok("turn box: the hold disabled by cluster-render's guard: never held, the status says so",
        d.st().state == "showing" && d.st().guide_disabled && d.in_box_slot(kGuide) == -1 && d.in_box_slot(kBox) == 1);
     unlink(path.c_str());
+}
+
+/* The app's Off (MapFeeds on neither), as the app sends it: from the cluster
+ * alone the cluster off; from both each off. Off releases the map's slot and
+ * the turn box's hold, so the stock map and box show again, and the HUD's
+ * slot; nothing is asked of the renderer while off. A display chosen again
+ * shows the next frame, the hold back with it. */
+static void show_off()
+{
+    const std::vector<uint8_t> f1 = atlas(11), f2 = atlas(12), f3 = atlas(13);
+    const uint64_t kStock = 0x01000101, kMap = 0x010004f0, kHud = 0x01000400;
+    Rig b(false, 6000, true, true, true);
+    b.feed.reset();
+    b.start();
+    b.port.stock_map(0x100, kStock);
+    b.port.stock_map(0x105, kBox);
+    FeedConfig fc;
+    fc.socket = b.path;
+    fc.video.level_bits = 0;
+    fc.guide_hold = true;
+    MapFeeds feeds(fc, true, false, 10);
+    feeds.set_stream(true, false, Picture::Shown);
+    std::vector<uint8_t> spare;
+    bool asked = false;
+    const auto pump = [&](int64_t ms, const std::vector<uint8_t> *frame) {
+        for (int64_t t = 0; t < ms; t += 5) {
+            b.now += 5;
+            if (frame && t % 65 == 0 && feeds.wants_frames()) {   /* the service offers only then */
+                spare.assign(frame->begin(), frame->end());
+                spare[(size_t)(t / 65) % 1088] ^= 0x80;
+                feeds.offer(&spare, (uint64_t)b.now, b.now);
+            }
+            for (int round = 0; round < 400; round++) {
+                std::vector<pollfd> fds;
+                const size_t first = b.svc->poll_fds(&fds);
+                const int n = ::poll(fds.data(), fds.size(), 0);
+                b.port.tick(b.now);
+                b.svc->after_poll(fds, first, b.now);
+                const bool pending = (feeds.cluster() && feeds.cluster()->wants_write()) || (feeds.hud_feed() && feeds.hud_feed()->wants_write());
+                const int64_t w = feeds.wake_in_ms(b.now);
+                if (w > 0 && w <= MapFeed::kScaleWaitMs)
+                    usleep(1000);
+                feeds.poll(b.now);
+                for (int i = 0; i < 4; i++)
+                    asked = asked || b.svc->slots().requested(i);
+                if (round > 0 && n <= 0 && !pending && w != MapFeed::kScaleWaitMs)
+                    break;
+            }
+        }
+    };
+    const auto status_of = [&](uint64_t slot, uint64_t content) -> int {
+        const crs::SlotInfo *r = b.port.row(slot, content);
+        return r ? (int)r->map_status : -1;
+    };
+    const auto layers = [&]() { return b.svc->compositor().layers().size(); };
+    const auto shown = [&](const char *target, const std::vector<uint8_t> &like) {
+        crs::FakeGraph *g = b.gpu.graph(target);
+        bool on = false;
+        if (g)
+            for (const auto &kv : g->shown.buffers)
+                on = on || (kv.second.f == crs::TexFormat::R8 && kv.second.px.size() == like.size() &&
+                            std::equal(kv.second.px.begin() + 1088, kv.second.px.end(), like.begin() + 1088));
+        return on;
+    };
+    const auto map_up = [&]() {
+        return status_of(0x100, kMap) == 1 && status_of(0x100, kStock) == 3 && status_of(0x105, kGuide) == 1 &&
+               status_of(0x105, kBox) == 3;
+    };
+    const auto stock_back = [&]() {
+        return status_of(0x100, kMap) == -1 && status_of(0x100, kStock) == 1 && status_of(0x105, kGuide) == -1 &&
+               status_of(0x105, kBox) == 1 && status_of(0x323, kHud) == -1;
+    };
+
+    pump(2000, &f1);
+    ok("Off: the cluster's map up first, the stock map and box parked behind it and the hold",
+       map_up() && shown("map", f1) && feeds.status("decode").state == "showing");
+
+    /* Off from the cluster alone: the app sends the cluster off */
+    feeds.set_cluster(false);
+    pump(5000, &f2);
+    FeedStatus st = feeds.status("decode");
+    ok("Off from the cluster: no feed or layer, nothing wanted, the map's slot and the hold released, the stock map and box back",
+       !feeds.cluster() && !feeds.hud_feed() && layers() == 0 && !feeds.wants_frames() && stock_back() && st.state == "off" &&
+           st.hud_state == "off" && !st.cluster && !st.hud);
+    const int requests = b.port.requests;
+    asked = false;
+    pump(10000, &f2);
+    ok("Off: nothing asked of the renderer for 10 s, no layer, the stock map and box still shown",
+       b.port.requests == requests && !asked && layers() == 0 && stock_back());
+
+    /* Cluster again: the next frame, the hold back */
+    feeds.set_cluster(true);
+    pump(2000, &f3);
+    ok("Off then Cluster: the map with the next frame, the stock map and box parked again, the hold back",
+       map_up() && shown("map", f3) && feeds.status("decode").state == "showing");
+
+    /* Off from both: the app sends the cluster off, then the HUD off */
+    feeds.set_hud(true);
+    pump(2000, &f1);
+    ok("Off: both up first, the HUD's scene in its slot", map_up() && status_of(0x323, kHud) == 1 &&
+                                                         feeds.status("decode").hud_state == "showing");
+    feeds.set_cluster(false);
+    feeds.set_hud(false);
+    pump(5000, &f2);
+    st = feeds.status("decode");
+    ok("Off from both: no feed or layer, the map's and the HUD's slots and the hold released, the stock map and box back",
+       !feeds.cluster() && !feeds.hud_feed() && layers() == 0 && !feeds.wants_frames() && stock_back() && st.state == "off" &&
+           st.hud_state == "off");
+    feeds.set_hud(true);
+    feeds.set_cluster(true);
+    pump(2000, &f3);
+    ok("Off then both: both back with the next frame", map_up() && status_of(0x323, kHud) == 1 && shown("map", f3) &&
+                                                         feeds.status("decode").hud_state == "showing");
 }
 
 /* Only what the renderer needs goes over its socket. */
@@ -613,6 +733,7 @@ int main()
     ok("status log: a target alone", sl.due(a, t + 11400));
 
     guide_hold();
+    show_off();
     only_what_is_needed();
     {   /* (its own scope: the names of the rest of main) */
     /* ---- MapFeeds: the cluster, and the HUD's copy when it is on ---- */
@@ -734,11 +855,13 @@ int main()
     }
 
     ok("start: the HUD alone is no cluster target", !feeds.set_target("hud") && feeds.cluster()->target() == "map");
-    ok("start: panel (the HUD's scene id) drops the HUD's feed", feeds.set_target("panel") && !feeds.hud_feed());
+    ok("start: panel keeps the HUD's feed", feeds.set_target("panel") && feeds.hud_feed());
     bpump(2500, &f2);
-    ok("on panel: no HUD layer, the HUD reported off", !layer_on(2) && feeds.status("decode").hud_state == "off" &&
-                                                         feeds.status("decode").hud);
-    ok("start: back on map, the HUD's feed again", feeds.set_target("map") && feeds.hud_feed());
+    ok("on panel: the panel and the HUD both shown, each with the map",
+       layer_on(1) && layer_on(2) && shown_r8("panel", f2) && feeds.status("decode").hud_state == "showing" &&
+           b.svc->slots().status(1).state == crs::TargetState::Shown &&
+           b.svc->slots().status(2).state == crs::TargetState::Shown);
+    ok("start: back on map, the HUD's feed kept", feeds.set_target("map") && feeds.hud_feed());
     bpump(2500, &f2);
 
     /* ---- the HUD map's size ---- */
@@ -817,6 +940,35 @@ int main()
     ok("the offset leaves the cluster's map alone", layer_on(0) && layer_on(0)->params.rect.x == 0 && layer_on(0)->params.rect.y == 0);
     feeds.set_hud_offset(0, 0);
     feeds.set_hud_width(0);
+
+    /* ---- the HUD map over BMW's pop-ups ---- */
+    bpump(300, &f2);
+    ok("by default the HUD map gives way (its layer's yield 1)",
+       layer_on(2) && layer_on(2)->params.yield && !feeds.status("decode").hud_keep_shown);
+    b.port.stock_map(0x322, 0x01000251);   /* the media source list on the HUD */
+    bpump(300, &f2);
+    ok("by default: a list on the HUD releases the HUD map",
+       b.svc->slots().status(2).state == crs::TargetState::Waiting);
+    const uint32_t yield_ref = layer_on(2) ? layer_on(2)->id() : 0;
+    feeds.set_hud_keep_shown(true);
+    bpump(2500, &f2);
+    ok("kept shown: the same layer with yield 0, shown over the list, the status says so",
+       layer_on(2) && layer_on(2)->id() == yield_ref && !layer_on(2)->params.yield &&
+           b.svc->slots().status(2).state == crs::TargetState::Shown && feeds.status("decode").hud_keep_shown);
+    ok("kept shown: the cluster's map layer untouched", layer_on(0) && layer_on(0)->params.yield);
+    feeds.set_hud(false);
+    bpump(2500, &f2);
+    feeds.set_hud(true);
+    bpump(2500, &f2);
+    ok("a HUD feed made later keeps it shown", layer_on(2) && !layer_on(2)->params.yield &&
+                                                 b.svc->slots().status(2).state == crs::TargetState::Shown);
+    feeds.set_hud_keep_shown(false);
+    bpump(300, &f2);
+    ok("giving way again: released for the list", layer_on(2) && layer_on(2)->params.yield &&
+                                                     b.svc->slots().status(2).state == crs::TargetState::Waiting);
+    b.port.stock_unmap(0x322, 0x01000251);
+    bpump(2500, &f2);
+    ok("the list gone: the HUD map shown again", b.svc->slots().status(2).state == crs::TargetState::Shown);
 
     /* ---- where the map shows: the cluster, the HUD, both, neither ---- */
     {

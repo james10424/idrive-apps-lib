@@ -72,7 +72,7 @@ var PROC = process.env.WOC_PROC || '/proc';
 function hex2(n) { return (n < 16 ? '0' : '') + n.toString(16); }
 /* A process runs the inode `st` (a stat of it, the file maybe unlinked
  * since): its exe is the inode, or it maps it, as a binary translator
- * (Rosetta in the emulator) runs one, its exe being the translator. */
+ * runs one, its exe being the translator. */
 function runs(st) {
     var mapped = ' ' + hex2((st.dev >> 8) & 0xfff) + ':' + hex2((st.dev & 0xff) | ((st.dev >> 12) & 0xfff00)) + ' ' + st.ino + ' ';
     var pids = [];

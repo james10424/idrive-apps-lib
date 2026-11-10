@@ -136,6 +136,22 @@ namespace ramses
         RAMSES19_LIBRARY_OWNED(DataFloat);
     };
 
+    class DataInt32 : public DataObject
+    {
+    public:
+        status_t setValue(int32_t value);
+        status_t getValue(int32_t& value) const;
+        RAMSES19_LIBRARY_OWNED(DataInt32);
+    };
+
+    class DataVector3f : public DataObject
+    {
+    public:
+        status_t setValue(float x, float y, float z);
+        status_t getValue(float& x, float& y, float& z) const;
+        RAMSES19_LIBRARY_OWNED(DataVector3f);
+    };
+
     class DataVector2f : public DataObject
     {
     public:
@@ -190,6 +206,12 @@ namespace ramses
         status_t setInputValueVector4f(const UniformInput& input, uint32_t elementCount, const float* values);
         status_t setInputValueMatrix44f(const UniformInput& input, const float* matrix44fValue);
         status_t setInputValueMatrix44f(const UniformInput& input, uint32_t elementCount, const float* values);
+        status_t setInputValueInt32(const UniformInput& input, uint32_t elementCount, const int32_t* values);
+        status_t setInputValueVector2i(const UniformInput& input, uint32_t elementCount, const int32_t* values);
+        status_t setInputValueVector3i(const UniformInput& input, uint32_t elementCount, const int32_t* values);
+        status_t setInputValueVector4i(const UniformInput& input, uint32_t elementCount, const int32_t* values);
+        status_t setInputValueMatrix22f(const UniformInput& input, uint32_t elementCount, const float* values);
+        status_t setInputValueMatrix33f(const UniformInput& input, uint32_t elementCount, const float* values);
         status_t getInputValueFloat(const UniformInput& input, float& value) const;
         status_t getInputValueVector4f(const UniformInput& input, float& x, float& y, float& z, float& w) const;
         status_t setInputTexture(const UniformInput& input, const TextureSampler& textureSampler);
@@ -267,9 +289,12 @@ namespace ramses
                                                ETextureFormat textureFormat, const char* name = nullptr);
 
         DataFloat* createDataFloat(const char* name = nullptr);
+        DataInt32* createDataInt32(const char* name = nullptr);
         DataVector2f* createDataVector2f(const char* name = nullptr);
+        DataVector3f* createDataVector3f(const char* name = nullptr);
         DataVector4f* createDataVector4f(const char* name = nullptr);
         DataMatrix44f* createDataMatrix44f(const char* name = nullptr);
+        RamsesObject* findObjectByName(const char* name);
 
         AnimationSystem* createAnimationSystem(uint32_t flags = EAnimationSystemFlags_Default, const char* name = nullptr);
         AnimationSystemRealTime* createRealTimeAnimationSystem(uint32_t flags = EAnimationSystemFlags_Default, const char* name = nullptr);
@@ -283,6 +308,16 @@ namespace ramses
         sceneId_t getSceneId() const;
         status_t setExpirationTimestamp(uint64_t ptpExpirationTimestampInMilliseconds);
         RAMSES19_LIBRARY_OWNED(Scene);
+    };
+
+    // The scene's objects of a type (or of a type derived from it).
+    class SceneObjectIterator
+    {
+    public:
+        SceneObjectIterator(const Scene& scene, ERamsesObjectType objectType);
+        ~SceneObjectIterator();
+        RamsesObject* getNext();
+        RAMSES19_VALUE_STORAGE(SceneObjectIterator);
     };
 }
 

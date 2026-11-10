@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Robert Nisipeanu
 [Unit]
 Description=waze-on-cluster journal keeper: the tools' journal lines kept on /var/opt
-# Started by waze-on-cluster-journal.timer 90 s after boot; no unit waits
+# Started by waze-on-cluster-journal.timer 10 s after boot; no unit waits
 # for it and it is ordered against no head-unit unit, only after the
 # /var/opt mount it writes to.
 RequiresMountsFor=/var/opt

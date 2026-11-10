@@ -44,13 +44,19 @@ app requires this tool (0.9.3); this tool requires `cluster-render` 0.4.0 and
 hooks and puts the tool's `recmgr` and `crashNames` names, `aapd` among
 them, on the lists. Requirements resolve across catalog sources.
 
-**Install.** The deploy tool runs `patchd.js activate` as root. On a proven
+**Install.** The deploy tool runs `patchd.js activate` as root. On a car
+coded `KI_KOMBI_VARIANT` 7, with a proven
 carplay build, or one CarPlay's Patch button patched before, it writes the patch
 CarPlay's Patch button writes, keeps the running binary linked, and never stops,
 kills or restarts CarPlay. The Store shows a restart pending; the app shows
 `Status: Patched after restart`. One head-unit start runs the patched
-CarPlay and starts this tool's services. The hook leaves CarPlay as it is,
-and the app says why and offers CarPlay's Patch button, when CarPlay's Remove patch button was used, when
+CarPlay and starts this tool's services. A first patch on a car counts as
+untested until CarPlay has run it for a healthy minute: boot recovery
+restores it after one failed start until then, after two from then on
+(PATCH.md "Boot recovery"). The hook leaves CarPlay as it is,
+and the app says why and offers CarPlay's Patch button, on a car coded
+otherwise or whose coding cannot be read (`Not supported on this car`,
+`Unavailable`), when CarPlay's Remove patch button was used, when
 the patcher cannot find or recognise one of its edit sites in the binary or
 something else modified it, when the build is outside the proven list and
 CarPlay's Patch button has not patched it, or when `carplay.service` starts another program.
@@ -308,15 +314,15 @@ the render decodes through a lost packet:
 [eroobeeroo](https://github.com/eroobeeroo), the choice of both or one after
 [wesleyredhat](https://github.com/wesleyredhat)'s #53). `cluster` (on by
 default) and `hud` (off by default) choose (`src/map_feeds.*`); the app's
-**Show on** sets them to the cluster, the HUD or both, and each change takes
-effect at once:
+**Show on** sets them to the cluster, the HUD, both or neither (**Off**),
+and each change takes effect at once:
 
 | | |
 |---|---|
 | Cluster only (the default) | the map on the cluster as always |
 | HUD only | no map scene on the cluster, so the KOMBI shows its own content and the guide hold is not asked for; the HUD takes each frame itself, with the whole upload budget, at most `hud_fps` a second |
 | Both | the cluster first; the HUD gets a copy, and up to half the budget, only what it spends (cluster-render README.md "Upload budget") |
-| Neither (the configuration's alone; the app does not offer it) | no feed and no connection to the renderer; every frame is still decoded, since the phone sends keyframes only when its stream starts, but none gets a picture: no VPP, readback, rounding, copy or hand-off. Turned on again, the map shows with the next frame, without waiting for a keyframe |
+| Neither (Off) | no feed and no connection to the renderer, so the cluster and the HUD show BMW's own content and the guide hold is not asked for; every frame is still decoded, since the phone sends keyframes only when its stream starts, but none gets a picture: no VPP, readback, rounding, copy, hand-off or upload. Turned on again, the map shows with the next frame, without waiting for a keyframe or a new stream |
 
 cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
 
@@ -358,17 +364,18 @@ cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
   grey-blue field; a day map (light background) is left as it is. Green is
   never made black, and does not count towards the background.
 - **It gives way.** The HUD map steps aside while the HUD's media and list
-  pop-ups show (cluster-render `hud_yield_slots`), and never takes the HUD
-  from BMW's own content.
+  pop-ups show (the media source list; cluster-render `hud_yield_slots`)
+  and comes back 1.5 s after they go, never for route guidance, and never
+  takes the HUD from BMW's own content. With `hud_keep_shown` 1 (the app's
+  **Keep HUD map over BMW's pop-ups**) it stays shown over them.
 - **Disabled after errors.** cluster-render's mapping guard turns the HUD
   off after two cluster restarts within 10 s of its mapping; the status
   says `hud_state` `disabled`, the app shows `HUD map: Disabled after
   errors`, and its frames are no longer copied or scaled. The cluster's map
   is not affected. Choosing Cluster and then the HUD again does not undo it; as
   root, `cluster-render guard-reset` does.
-- Not with `target = panel`, which shares the HUD's scene id.
 - The settings (`cluster`, `hud`, `hud_width_pct`, `hud_offset_x`,
-  `hud_offset_y`) are saved by `patchd` in
+  `hud_offset_y`, `hud_keep_shown`) are saved by `patchd` in
   `/var/opt/waze-on-cluster/map.state.conf` (`map_state_file`), which this
   tool reads over its configuration at each start, and the app changes the
   running render at once. They stay out of `waze-on-cluster.local.conf`,
@@ -376,7 +383,7 @@ cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
   finds there into the state file at its start and at an install. Control:
   `{"cmd":"hud","on":"1"}`, `{"cmd":"hud","hud_width_pct":"70"}`,
   `{"cmd":"hud","hud_x":"40","hud_y":"-20"}` (strings; an axis left out
-  stays).
+  stays), `{"cmd":"hud","hud_keep_shown":"1"}`.
 - Per driver profile: the settings are shared by every driver profile until
   the app's **Own settings for this driver** gives one its own copy. The app
   tells `patchd` the profile in use (`{"cmd":"profile","id"}`) and the
@@ -459,9 +466,53 @@ files in `/run/cluster-render/`, the render's `status.json` and
 journal of the render, `patchd`, the boot step, the recovery, capture,
 journal and logs services, cluster-render and carplay, the list of boots,
 `ls -l` of both tools' folders, their `*.local.conf`, the date and the
-uptime, and `wifi.txt`: CarPlay's Wi-Fi band (below), each P2P interface's
+uptime, `wifi.txt`: CarPlay's Wi-Fi band (below), each P2P interface's
 `/proc/net/dev` counters and the kernel's last 60 802.1X and DHCP lines for
-the P2P interfaces (from the journal, else `dmesg`).
+the P2P interfaces (from the journal, else `dmesg`), and what a start the
+head unit reset needs explained (`patch/logs_extra.js`):
+
+- `patch-record-carplay.json`, `patch-record-aapd.json`: the patchers'
+  records (`*.woc-patch.json`); `aa-boot-recovery.json`: the aapd boot
+  recovery's counter;
+- `aapd-status.txt`: `aapd_patch.js status` (aapd's build, its edits, the
+  backups, the cluster coding); `coding.txt`: the cluster coding's
+  `KI_KOMBI_VARIANT`, the number only;
+- `deploy.txt`: the deploy tool's version, each tool installed with its
+  version (`/var/opt/<id>/current/component.json`: id, kind, version) and,
+  from the deploy tool's `state.json`, the tools' versions and firmware, the
+  apps' versions, the restarts pending in this boot and the last bounce;
+- `restart-record-<n>-<boot id>-<recmgr|crashhandler>.xml`: recmgr's and
+  the crash handler's restart records, which each deletes at its start. The
+  carplay boot step (`waze-on-cluster-boot.service`, root, before carplay)
+  copies each it finds into `/var/opt/waze-on-cluster/restart-records/`
+  (group `systemd-journal`, 2770, files 0640, as the kept journal), named by
+  the boot that found it and numbered in boot order (the clock is not yet
+  set then), VIN-scrubbed and cut to 64 KiB as below, those of the last 5
+  boots kept; with no record it writes nothing, and a failure only logs a
+  line;
+- `restartInfo-recmgr.xml`, `restartInfo-crashhandler.xml`: the same
+  records, should they still be there when the Logs page opens;
+  `recmgr-crashes.txt`: the database file's modification time and the
+  newest 200 rows of recmgr's crash table (`recmgr_stats.db` `Crash`: key,
+  the application's name, crash id; recmgr leaves the rows' time empty and
+  their lifecycle 0), read by the firmware's `sqlite3`
+  read-only (`file:...?mode=ro`) and killed after 2 s; `core-dumps.txt`: the
+  names and times of what the crash handler and the kernel keep of crashes
+  (`coredumps/`, `gpu_hangs/`, `gcd/`, `dlt-cdh/`, `/var/opt/kerneldump`,
+  two levels deep, the newest 100 of each), never the files. These four are
+  under `/var/opt/public`, which only root reads: the logs service's
+  firewall unit, root's, writes them to `/run/waze-on-cluster-logs` (group
+  `systemd-journal`, 2750, written whole into a new folder and renamed into
+  place) before the logs service starts, so a Save logs has them as they were when the Logs page opened;
+  `collect-logs.sh` run as root reads them itself.
+
+Each of these files is at most 64 KiB, and in each, text shaped like a VIN
+(17 characters) or a short VIN (7) is replaced by `<VIN>`. Left out: the
+coding image itself, recmgr's `UserID` column (7 characters, a short VIN's
+size), the core dumps' and their context files' contents, every other field
+of the deploy tool's `state.json` and component manifests, and the deploy
+tool's and the updater's other files (their tokens, credentials, sources,
+config and backups).
 
 **CarPlay's Wi-Fi band.** The head unit runs two wireless-CarPlay P2P
 groups, one on 5 GHz and one on 2.4 GHz, bridged on `wlan_bridge`
@@ -500,15 +551,21 @@ protocols.
 `patch/journal_keep.js`) keeps the tools' part of the journal on
 `/var/opt`: the unit's journal is volatile and holds about four minutes on
 the car, where the navigation writes some 16,000 lines in that time. Its
-timer starts it 90 s after boot, so it takes nothing from the head unit's
-start; no unit waits for it, and it is ordered against no head-unit unit.
+timer starts it 10 s after boot, so a start the head unit resets within
+its first minute still leaves its lines; it runs at the lowest CPU and I/O
+priority, no unit waits for it, and it is ordered against no head-unit unit.
 It reads what this boot logged so far, then follows this boot's lines of the
 waze-on-cluster services, cluster-render, carplay, recmgr and crashhandler,
 systemd's lines about them and their sockets, and the kernel's, and appends
 them every 2 s to
 `/var/opt/waze-on-cluster/journal/journal.log`, opening the file only for
-the write. Each line is at most 1 KiB: the time (UTC, µs), the unit, the
-program and its pid, the message. Past 384 KiB the file becomes
+the write. In the boot's first 2 minutes each append is also synced to disk
+(`fdatasync`, through a read-only descriptor, so `var-opt-ro.service`'s
+remount never finds the file open for writing): a start reset without a
+shutdown keeps its lines up to the last 2 s before the reset. After that,
+`/var/opt`'s own commit (ext4, `data=ordered`, every 5 s) makes the lines
+durable within seconds. Each line is at most 1 KiB: the time (UTC, µs), the
+unit, the program and its pid, the message. Past 384 KiB the file becomes
 `journal.log.1` and the older ones move up to `journal.log.9`: at most 10
 files and 3.75 MiB. The tools' lines (waze-on-cluster, cluster-render) and
 the others each have 128 KiB a minute, with a minute's worth in reserve, so
@@ -748,16 +805,17 @@ over a file of its own build. **Never `systemctl stop` or `restart` aapd.**
   that reads the journal and owns `journal/` and `saved/` (mode 2770). Root
   runs only in node, which the crash handler's list names (the journal
   folder's creation, a `+` command, which systemd gives no limits), and in
-  the firewall unit. None of the units is ordered against a head-unit unit,
-  and no head-unit unit or boot target waits for the services: a timer
-  starts the journal service, a socket the logs service, the logs service
+  the firewall unit (also the read-only snapshot of BMW's crash records for
+  Save logs, its `sqlite3` with the unit's limits). None of the units is
+  ordered against a head-unit unit, and no head-unit unit or boot target
+  waits for the services: a timer starts the journal service, a socket the logs service, the logs service
   the firewall unit; `timers.target` and `sockets.target` wait only for the
   timer's and the socket's own start. They restart after a failure (10 s
   apart, at most 10 starts in 10 minutes). The journal and logs services run
   at nice 19 with idle I/O and 64 CPU shares, within 20% and 50% of a CPU
   and 96 and 160 MiB; the firewall unit at nice 10, within 50% of a CPU and
   64 MiB. All three dump no core for the crash handler (`LimitCORE=1`, which
-  their children such as `journalctl` and `nft` inherit).
+  their children such as `journalctl`, `nft` and `sqlite3` inherit).
 - Nothing is mapped on the cluster before the stream's first non-blank
   picture, once its picture has stayed blank for `blank_ms`, or after the
   frames stop. The map never alters the gauges' data.

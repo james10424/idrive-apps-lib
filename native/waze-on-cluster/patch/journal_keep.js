@@ -11,7 +11,12 @@
  * kernel's, then follows them. Each becomes one line of at most LINE_MAX bytes,
  *   2026-11-03T06:58:54.365447Z cluster-render.service cluster-render[1152]: <message>
  * appended to DIR/journal.log every FLUSH_MS, the file opened only for the
- * write. A file that would pass FILE_MAX becomes journal.log.1, the older
+ * write. In the boot's first EARLY_S seconds of uptime each append is also
+ * synced to disk (fdatasync, through a read-only descriptor, so a remount
+ * read-only never finds the file open for writing): a start the head unit
+ * resets without a shutdown keeps its lines up to the last append. Later,
+ * the file system's own commit makes them durable within seconds.
+ * A file that would pass FILE_MAX becomes journal.log.1, the older
  * ones move up and journal.log.<FILES-1> is dropped. The tools' lines
  * (waze-on-cluster, cluster-render) and the others (carplay, recmgr,
  * crashhandler, the kernel) each have RATE / 2 bytes a minute, with a
@@ -36,6 +41,7 @@
  * Node 8 on the unit. No dependencies.
  */
 var fs = require('fs');
+var os = require('os');
 var path = require('path');
 var cp = require('child_process');
 
@@ -48,6 +54,7 @@ var LINE_MAX = 1024;
 var RATE = 256 * 1024;
 var FLUSH_MS = Number(process.env.WOC_JOURNAL_FLUSH_MS) || 2000;
 var RESPAWN_MS = Number(process.env.WOC_JOURNAL_RESPAWN_MS) || 10000;
+var EARLY_S = 120;
 var PENDING_MAX = 256 * 1024;
 
 var UNITS = ['waze-on-cluster.service', 'waze-on-cluster-patchd.service', 'waze-on-cluster-boot.service',
@@ -148,14 +155,19 @@ Ring.prototype.trim = function () {
     if (this.size > this.fileMax) this.rotate();
 };
 /* Appends lines (Buffers, each at most fileMax bytes), rotating between
- * lines so no file passes fileMax. */
-Ring.prototype.append = function (lines) {
+ * lines so no file passes fileMax. sync: each write is on disk before the
+ * next (fdatasync through a read-only descriptor, the write's closed). */
+Ring.prototype.append = function (lines, sync) {
     if (this.size === null) this.trim();
     var batch = [], bytes = 0, self = this;
     function write() {
         if (!batch.length) return;
         var fd = fs.openSync(self.name(0), 'a', 0o660);
         try { fs.writeSync(fd, Buffer.concat(batch)); } finally { fs.closeSync(fd); }
+        if (sync) {
+            fd = fs.openSync(self.name(0), 'r');
+            try { fs.fdatasyncSync(fd); } finally { fs.closeSync(fd); }
+        }
         self.size += bytes;
         batch = [];
         bytes = 0;
@@ -199,7 +211,7 @@ function main() {
         var lines = pending;
         pending = [];
         pendingBytes = 0;
-        try { ring.append(lines); warned = ''; } catch (e) { ring.size = null; warn('cannot write ' + DIR + ': ' + e.message); }
+        try { ring.append(lines, os.uptime() < EARLY_S); warned = ''; } catch (e) { ring.size = null; warn('cannot write ' + DIR + ': ' + e.message); }
     }
     function take(entry) {
         var f = format(entry);

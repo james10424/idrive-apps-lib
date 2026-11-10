@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <map>
+#include <set>
 
 #include "log.h"
 #include "ramses19/ramses.h"
@@ -515,68 +518,30 @@ public:
     {
         if (a.t.empty() || a.v.size() != a.t.size() * a.width)
             return 0;
-        if (!anim_)
-            anim_ = scene_->createRealTimeAnimationSystem(ramses::EAnimationSystemFlags_Default, "anim");
-        if (!anim_)
-            return 0;
-        auto q = quads_.find(node);
-        auto p = parts_.find(node);
-        auto v = views_.find(node);
-        ramses::Node *target = q != quads_.end()   ? (ramses::Node *)q->second.turned
-                               : p != parts_.end() ? (ramses::Node *)p->second.mesh
-                               : v != views_.end() ? (ramses::Node *)v->second.cam
-                                                   : nullptr;
-        if (!target)
-            return 0;
-        const bool on_quad = q != quads_.end();
-        /* The renderer's conventions: y up, so down is negative y, and its
-         * rotations are left-handed, so a quad's clockwise turn is positive
-         * z and the right-handed angles of parts and cameras are negated. */
-        std::vector<float> vals = a.v;
-        if (!on_quad && a.property == Animated::Rotate)
-            for (float &x : vals)
-                x = -x;
-        if (on_quad && a.property == Animated::Translate)
-            for (size_t k = 1; k < vals.size(); k += 3)
-                vals[k] = -vals[k];
-
         Anim an;
         an.node = node;
-        an.spline = spline(a, vals);
-        if (a.property == Animated::Uniform) {
-            ramses::Appearance *app = nullptr;
-            const ramses::Effect *fx = look(node, &app);
-            ramses::UniformInput in;
-            if (an.spline && fx && ok(fx->findUniformInput(a.uniform.c_str(), in)))
-                an.prop = anim_->createAnimatedProperty(in, *app);
-        } else if (an.spline) {
-            const ramses::EAnimatedProperty prop = a.property == Animated::Rotate      ? ramses::EAnimatedProperty_Rotation
-                                                   : a.property == Animated::Translate ? ramses::EAnimatedProperty_Translation
-                                                                                       : ramses::EAnimatedProperty_Scaling;
-            an.prop = anim_->createAnimatedProperty(*target, prop,
-                                                    a.width == 1 ? ramses::EAnimatedPropertyComponent_Z
-                                                                 : ramses::EAnimatedPropertyComponent_All);
-        }
-        an.anim = an.prop ? anim_->createAnimation(*an.prop, *an.spline) : nullptr;
-        an.seq = an.anim ? anim_->createAnimationSequence() : nullptr;
-        if (!an.seq || !ok(an.seq->addAnimation(*an.anim)) || (a.loop && !ok(an.seq->setAnimationLooping(*an.anim))) ||
-            !ok(anim_->updateLocalTime()) || !ok(an.seq->start())) {
+        an.a = a;
+        bool made = false;
+        if (!build(an, &made)) {
             log_error("ramses: animation refused");
-            destroy_anim(an);
+            if (made)
+                rebuild();
             return 0;
         }
         anims_[next_] = an;
         return next_++;
     }
 
+    /* The animation system goes whole, its objects with it, and the
+     * animations that stay are made again in a new one, each from when it
+     * started. VERIFIED on the unit's libramses 19: a destroyed spline or
+     * animated property leaves its animation system one the library cannot
+     * describe, and it crashes the process when a renderer subscribes to
+     * the scene again, or when the scene is saved. */
     void stop(int anim) override
     {
-        auto it = anims_.find(anim);
-        if (it == anims_.end())
-            return;
-        it->second.seq->stop();
-        destroy_anim(it->second);
-        anims_.erase(it);
+        if (anims_.erase(anim))
+            rebuild();
     }
 
     bool flush(uint64_t tag) override
@@ -636,11 +601,93 @@ private:
     };
     struct Anim {
         int node = 0;
+        Animation a;
+        ramses::globalTimeStamp_t start = 0;   /* 0: not started yet */
         ramses::AnimationSequence *seq = nullptr;
         ramses::Animation *anim = nullptr;
         ramses::AnimatedProperty *prop = nullptr;
         ramses::Spline *spline = nullptr;
     };
+
+    /* Makes an's objects in the animation system (made when there is none)
+     * and starts it at an.start, or now. An unknown node or uniform is
+     * refused before anything is made; *made: objects were made, which a
+     * refusal leaves to a new system (rebuild()) to take away. */
+    bool build(Anim &an, bool *made)
+    {
+        const int node = an.node;
+        const Animation &a = an.a;
+        auto q = quads_.find(node);
+        auto p = parts_.find(node);
+        auto v = views_.find(node);
+        ramses::Node *target = q != quads_.end()   ? (ramses::Node *)q->second.turned
+                               : p != parts_.end() ? (ramses::Node *)p->second.mesh
+                               : v != views_.end() ? (ramses::Node *)v->second.cam
+                                                   : nullptr;
+        ramses::Appearance *app = nullptr;
+        const ramses::Effect *fx = look(node, &app);
+        ramses::UniformInput in;
+        if (!target || (a.property == Animated::Uniform && (!fx || !ok(fx->findUniformInput(a.uniform.c_str(), in)))))
+            return false;
+        if (!anim_)
+            anim_ = scene_->createRealTimeAnimationSystem(ramses::EAnimationSystemFlags_Default, "anim");
+        if (!anim_)
+            return false;
+        *made = true;
+        const bool on_quad = q != quads_.end();
+        /* The renderer's conventions: y up, so down is negative y, and its
+         * rotations are left-handed, so a quad's clockwise turn is positive
+         * z and the right-handed angles of parts and cameras are negated. */
+        std::vector<float> vals = a.v;
+        if (!on_quad && a.property == Animated::Rotate)
+            for (float &x : vals)
+                x = -x;
+        if (on_quad && a.property == Animated::Translate)
+            for (size_t k = 1; k < vals.size(); k += 3)
+                vals[k] = -vals[k];
+
+        an.spline = spline(a, vals);
+        if (an.spline && a.property == Animated::Uniform) {
+            an.prop = anim_->createAnimatedProperty(in, *app);
+        } else if (an.spline) {
+            const ramses::EAnimatedProperty prop = a.property == Animated::Rotate      ? ramses::EAnimatedProperty_Rotation
+                                                   : a.property == Animated::Translate ? ramses::EAnimatedProperty_Translation
+                                                                                       : ramses::EAnimatedProperty_Scaling;
+            an.prop = anim_->createAnimatedProperty(*target, prop,
+                                                    a.width == 1 ? ramses::EAnimatedPropertyComponent_Z
+                                                                 : ramses::EAnimatedPropertyComponent_All);
+        }
+        an.anim = an.prop ? anim_->createAnimation(*an.prop, *an.spline) : nullptr;
+        an.seq = an.anim ? anim_->createAnimationSequence() : nullptr;
+        if (!an.seq || !ok(an.seq->addAnimation(*an.anim)) || (a.loop && !ok(an.seq->setAnimationLooping(*an.anim))) ||
+            !ok(anim_->updateLocalTime()))
+            return false;
+        const ramses::globalTimeStamp_t at = an.start ? an.start : anim_->getTime();
+        if (!ok(an.seq->startAt(at)))
+            return false;
+        an.start = at;
+        return true;
+    }
+
+    void rebuild()
+    {
+        if (anim_)
+            scene_->destroy(*anim_);
+        anim_ = nullptr;
+        bool left = false;
+        for (auto it = anims_.begin(); it != anims_.end();) {
+            bool made = false;
+            if (build(it->second, &made)) {
+                ++it;
+                continue;
+            }
+            log_error("ramses: animation %d refused in a new animation system", it->first);
+            left = left || made;
+            it = anims_.erase(it);
+        }
+        if (left)
+            rebuild();
+    }
 
     /* The appearance and effect of a quad or a part. */
     const ramses::Effect *look(int handle, ramses::Appearance **app)
@@ -723,64 +770,47 @@ private:
                 ramses::SplineStepFloat *s = anim_->createSplineStepFloat();
                 for (size_t k = 0; s && good && k < n; k++)
                     good = ok(s->setKey(a.t[k], f[k]));
-                return s && good ? s : drop_spline(s);
+                return s && good ? s : nullptr;
             }
             ramses::SplineLinearFloat *s = anim_->createSplineLinearFloat();
             for (size_t k = 0; s && good && k < n; k++)
                 good = ok(s->setKey(a.t[k], f[k]));
-            return s && good ? s : drop_spline(s);
+            return s && good ? s : nullptr;
         }
         if (a.width == 3) {
             if (a.step) {
                 ramses::SplineStepVector3f *s = anim_->createSplineStepVector3f();
                 for (size_t k = 0; s && good && k < n; k++)
                     good = ok(s->setKey(a.t[k], f[k * 3], f[k * 3 + 1], f[k * 3 + 2]));
-                return s && good ? s : drop_spline(s);
+                return s && good ? s : nullptr;
             }
             ramses::SplineLinearVector3f *s = anim_->createSplineLinearVector3f();
             for (size_t k = 0; s && good && k < n; k++)
                 good = ok(s->setKey(a.t[k], f[k * 3], f[k * 3 + 1], f[k * 3 + 2]));
-            return s && good ? s : drop_spline(s);
+            return s && good ? s : nullptr;
         }
         if (a.width == 4) {
             if (a.step) {
                 ramses::SplineStepVector4f *s = anim_->createSplineStepVector4f();
                 for (size_t k = 0; s && good && k < n; k++)
                     good = ok(s->setKey(a.t[k], f[k * 4], f[k * 4 + 1], f[k * 4 + 2], f[k * 4 + 3]));
-                return s && good ? s : drop_spline(s);
+                return s && good ? s : nullptr;
             }
             ramses::SplineLinearVector4f *s = anim_->createSplineLinearVector4f();
             for (size_t k = 0; s && good && k < n; k++)
                 good = ok(s->setKey(a.t[k], f[k * 4], f[k * 4 + 1], f[k * 4 + 2], f[k * 4 + 3]));
-            return s && good ? s : drop_spline(s);
+            return s && good ? s : nullptr;
         }
         return nullptr;
     }
 
-    ramses::Spline *drop_spline(ramses::Spline *s)
-    {
-        if (s)
-            anim_->destroy(*s);
-        return nullptr;
-    }
-
-    void destroy_anim(Anim &an)
-    {
-        if (an.seq) anim_->destroy(*an.seq);
-        if (an.anim) anim_->destroy(*an.anim);
-        if (an.prop) anim_->destroy(*an.prop);
-        if (an.spline) anim_->destroy(*an.spline);
-        an = Anim();
-    }
-
     void stop_on(int node)
     {
-        std::vector<int> going;
-        for (const auto &kv : anims_)
-            if (kv.second.node == node)
-                going.push_back(kv.first);
-        for (int a : going)
-            stop(a);
+        const size_t before = anims_.size();
+        for (auto it = anims_.begin(); it != anims_.end();)
+            it = it->second.node == node ? anims_.erase(it) : std::next(it);
+        if (anims_.size() != before)
+            rebuild();
     }
 
     /* Puts every quad and view in its pass, in draw order (plan_passes). */
@@ -873,6 +903,322 @@ private:
     int next_ = 1;
 };
 
+/* Scene files on RAMSES 19 (graph.h FileScene): the scene and its resources
+ * loaded by the client library (loadSceneFromFile), with the scene id the
+ * file keeps, published as the target's scene. Its objects come from
+ * SceneObjectIterator by object type, and a uniform's setter from its data
+ * type; the headers give neither's values (../abi/ABI.md), so the first load
+ * learns them from objects it makes and destroys at once: a probe effect
+ * with a uniform of each type, a float array, and a scene of each object
+ * kind, never published. The resource objects a load makes go with its
+ * scene. */
+
+/* Never published; no target's (they are allow-listed). */
+const ramses::sceneId_t kProbeScene = 0xfffffff0u;
+
+const char *const kProbeVs =
+    "uniform float u_f1; uniform vec2 u_f2; uniform vec3 u_f3; uniform vec4 u_f4;\n"
+    "uniform int u_i1; uniform ivec2 u_i2; uniform ivec3 u_i3; uniform ivec4 u_i4;\n"
+    "uniform mat2 u_m2; uniform mat3 u_m3; uniform mat4 u_m4;\n"
+    "attribute vec3 a_p;\n"
+    "void main() {\n"
+    "  float s = u_f1 + u_f2.x + u_f3.x + u_f4.x + float(u_i1 + u_i2.x + u_i3.x + u_i4.x) + u_m2[0][0] + u_m3[0][0];\n"
+    "  gl_Position = u_m4 * vec4(a_p * s, 1.0);\n"
+    "}\n";
+const char *const kProbeFs = "precision mediump float;\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+const char *const kProbeUniforms[11] = {"u_f1", "u_f2", "u_f3", "u_f4", "u_i1", "u_i2",
+                                        "u_i3", "u_i4", "u_m2", "u_m3", "u_m4"};
+/* Floats or ints in one element of each, in Ramses19Types::uniform's order. */
+const uint32_t kWidth[11] = {1, 2, 3, 4, 1, 2, 3, 4, 4, 9, 16};
+const uint32_t kDataWidth[5] = {1, 1, 2, 3, 4};
+
+bool learn(ramses::RamsesClient &client, Ramses19Types *t, std::string *err)
+{
+    ramses::EffectDescription d;
+    d.setVertexShader(kProbeVs);
+    d.setFragmentShader(kProbeFs);
+    ramses::Effect *fx = client.createEffect(d, ramses::ResourceCacheFlag_DoNotCache, "cluster-render-probe");
+    static const float one = 1;
+    const ramses::FloatArray *arr = client.createConstFloatArray(1, &one);
+    ramses::SceneConfig sc;
+    ramses::Scene *s = client.createScene(kProbeScene, sc, "cluster-render-probe");
+    bool good = fx && arr && s;
+    for (int i = 0; good && i < 11; i++) {
+        ramses::UniformInput u;
+        good = ok(fx->findUniformInput(kProbeUniforms[i], u));
+        t->uniform[i] = good ? (uint32_t)u.getDataType() : 0;
+    }
+    const ramses::RamsesObject *nodes[4] = {}, *others[8] = {};
+    if (good) {
+        const ramses::RamsesObject *n[4] = {s->createGroupNode(), s->createMeshNode(), s->createPerspectiveCamera(),
+                                            s->createOrthographicCamera()};
+        const ramses::RamsesObject *o[8] = {s->createRenderPass(),    s->createRenderGroup(),
+                                            s->createAppearance(*fx), s->createDataFloat(),
+                                            s->createDataInt32(),     s->createDataVector2f(),
+                                            s->createDataVector3f(),  s->createDataVector4f()};
+        std::copy(n, n + 4, nodes);
+        std::copy(o, o + 8, others);
+        for (const ramses::RamsesObject *x : nodes)
+            good = good && x;
+        for (const ramses::RamsesObject *x : others)
+            good = good && x;
+    }
+    if (good) {
+        t->mesh = (uint32_t)nodes[1]->getType();
+        t->persp = (uint32_t)nodes[2]->getType();
+        t->ortho = (uint32_t)nodes[3]->getType();
+        t->pass = (uint32_t)others[0]->getType();
+        for (int i = 0; i < 5; i++)
+            t->data[i] = (uint32_t)others[3 + i]->getType();
+        /* The bases: Node is every node's and nothing else's here; Resource
+         * the effect's and the array's, and no scene object's. */
+        t->node = t->resource = 0;
+        for (uint32_t v = 1; v < 256; v++) {
+            const ramses::ERamsesObjectType type = ramses::ERamsesObjectType(v);
+            bool all_nodes = true, any_node = false, any_other = false;
+            for (const ramses::RamsesObject *x : nodes) {
+                all_nodes = all_nodes && x->isOfType(type);
+                any_node = any_node || x->isOfType(type);
+            }
+            for (const ramses::RamsesObject *x : others)
+                any_other = any_other || x->isOfType(type);
+            const bool scene = s->isOfType(type);
+            if (!t->node && all_nodes && !any_other && !scene && !fx->isOfType(type))
+                t->node = v;
+            if (!t->resource && fx->isOfType(type) && arr->isOfType(type) && !any_node && !any_other && !scene)
+                t->resource = v;
+        }
+        good = t->node && t->resource;
+    }
+    if (s)
+        client.destroy(*s);
+    if (fx)
+        client.destroy(*fx);
+    if (arr)
+        client.destroy(*arr);
+    if (!good) {
+        *err = "ramses: the object types could not be learned";
+        log_error("%s", err->c_str());
+        return false;
+    }
+    log_info("ramses: object types node %u mesh %u cameras %u %u pass %u resource %u", t->node, t->mesh, t->persp,
+             t->ortho, t->pass, t->resource);
+    return true;
+}
+
+std::set<const ramses::RamsesObject *> resources(const ramses::RamsesClient &client, uint32_t type)
+{
+    std::set<const ramses::RamsesObject *> out;
+    ramses::ResourceIterator it(client, ramses::ERamsesObjectType(type));
+    while (const ramses::RamsesObject *o = it.getNext())
+        out.insert(o);
+    return out;
+}
+
+/* A uniform by name, through the effect's list: findUniformInput reports a
+ * name it lacks as an error, and a pattern may match meshes without it. */
+bool find_uniform(const ramses::Effect &fx, const std::string &name, ramses::UniformInput *u)
+{
+    const uint32_t n = fx.getUniformInputCount();
+    for (uint32_t i = 0; i < n; i++)
+        if (ok(fx.getUniformInput(i, *u)) && u->getName() && name == u->getName())
+            return true;
+    return false;
+}
+
+bool set_tree(ramses::Node &n, bool on)
+{
+    bool good = ok(n.setVisibility(on));
+    const uint32_t children = n.getChildCount();
+    for (uint32_t i = 0; i < children; i++)
+        if (ramses::Node *c = n.getChild(i))
+            good = set_tree(*c, on) && good;
+    return good;
+}
+
+class Ramses19FileScene : public FileScene {
+public:
+    Ramses19FileScene(ramses::RamsesClient &client, const Ramses19Types &types) : client_(client), types_(types) {}
+
+    ~Ramses19FileScene() override
+    {
+        if (scene_) {
+            if (scene_->isPublished())
+                scene_->unpublish();
+            client_.destroy(*scene_);
+        }
+        for (const ramses::RamsesObject *r : made_)
+            client_.destroy(*static_cast<const ramses::Resource *>(r));
+    }
+
+    bool load(const TargetSpec &t, const std::string &file, const std::vector<std::string> &res, std::string *err)
+    {
+        ramses::ResourceFileDescriptionSet set;
+        for (const std::string &r : res) {
+            files_.emplace_back(new ramses::ResourceFileDescription(r.c_str()));
+            set.add(*files_.back());
+        }
+        const std::set<const ramses::RamsesObject *> before = resources(client_, types_.resource);
+        scene_ = client_.loadSceneFromFile(file.c_str(), set);
+        for (const ramses::RamsesObject *r : resources(client_, types_.resource))
+            if (!before.count(r))
+                made_.push_back(r);
+        if (!scene_) {
+            *err = "the scene file did not load";
+            return false;
+        }
+        if (scene_->getSceneId() != t.scene_id) {
+            char b[96];
+            std::snprintf(b, sizeof b, "the file's scene id is 0x%llx, not the target's 0x%llx",
+                          (unsigned long long)scene_->getSceneId(), (unsigned long long)t.scene_id);
+            *err = b;
+            return false;
+        }
+        collect(Node, types_.node);
+        collect(Mesh, types_.mesh);
+        collect(Camera, types_.persp);
+        collect(Camera, types_.ortho);
+        collect(Pass, types_.pass);
+        if (!ok(scene_->flush()) || !ok(scene_->publish(ramses::EScenePublicationMode_LocalAndRemote))) {
+            *err = "publish failed";
+            return false;
+        }
+        log_info("ramses: scene file of %zu nodes, %zu meshes, %zu cameras, %zu passes, %zu resources made",
+                 objs_[Node].size(), objs_[Mesh].size(), objs_[Camera].size(), objs_[Pass].size(), made_.size());
+        return true;
+    }
+
+    std::vector<std::string> objects(Kind k) override { return names_[k]; }
+
+    bool visible(int node, bool on) override { return set_tree(*static_cast<ramses::Node *>(objs_[Node][node]), on); }
+
+    bool transform(int node, Transform what, const float v[3]) override
+    {
+        ramses::Node *n = static_cast<ramses::Node *>(objs_[Node][node]);
+        return ok(what == Translation ? n->setTranslation(v[0], v[1], v[2])
+                  : what == Scaling   ? n->setScaling(v[0], v[1], v[2])
+                                      : n->setRotation(v[0], v[1], v[2]));
+    }
+
+    bool viewport(int camera, const uint32_t v[4]) override
+    {
+        return ok(static_cast<ramses::LocalCamera *>(objs_[Camera][camera])->setViewport(v[0], v[1], v[2], v[3]));
+    }
+
+    bool enable(int pass, bool on) override
+    {
+        return ok(static_cast<ramses::RenderPass *>(objs_[Pass][pass])->setEnabled(on));
+    }
+
+    bool uniform(int mesh, const std::string &name, const std::vector<float> &v, std::string *why) override
+    {
+        ramses::Appearance *app = static_cast<ramses::MeshNode *>(objs_[Mesh][mesh])->getAppearance();
+        ramses::UniformInput u;
+        if (!app || !find_uniform(app->getEffect(), name, &u)) {
+            *why = "no uniform " + name;
+            return false;
+        }
+        if (app->isInputBound(u)) {
+            *why = name + " is bound to a data object (--set it)";
+            return false;
+        }
+        const uint32_t type = (uint32_t)u.getDataType();
+        int t = 0;
+        while (t < 11 && types_.uniform[t] != type)
+            t++;
+        if (t == 11) {
+            *why = name + " takes no numbers";
+            return false;
+        }
+        const uint32_t n = std::min<uint32_t>((uint32_t)v.size() / kWidth[t], u.getElementCount());
+        if (!n) {
+            *why = name + " takes " + std::to_string(kWidth[t]) + " values";
+            return false;
+        }
+        if (t >= 4 && t < 8) {
+            std::vector<int32_t> iv(n * kWidth[t]);
+            for (size_t i = 0; i < iv.size(); i++)
+                iv[i] = (int32_t)std::lround(v[i]);
+            const ramses::status_t s = t == 4   ? app->setInputValueInt32(u, n, iv.data())
+                                       : t == 5 ? app->setInputValueVector2i(u, n, iv.data())
+                                       : t == 6 ? app->setInputValueVector3i(u, n, iv.data())
+                                                : app->setInputValueVector4i(u, n, iv.data());
+            return ok(s);
+        }
+        const float *f = v.data();
+        switch (t) {
+        case 0: return ok(app->setInputValueFloat(u, n, f));
+        case 1: return ok(app->setInputValueVector2f(u, n, f));
+        case 2: return ok(app->setInputValueVector3f(u, n, f));
+        case 3: return ok(app->setInputValueVector4f(u, n, f));
+        case 8: return ok(app->setInputValueMatrix22f(u, n, f));
+        case 9: return ok(app->setInputValueMatrix33f(u, n, f));
+        default: return ok(app->setInputValueMatrix44f(u, n, f));
+        }
+    }
+
+    bool data(const std::string &name, const std::vector<float> &v, std::string *why) override
+    {
+        auto it = data_.find(name);
+        if (it == data_.end()) {
+            /* ponytail: names a client makes up start the cache over. */
+            if (data_.size() >= 1024)
+                data_.clear();
+            it = data_.emplace(name, scene_->findObjectByName(name.c_str())).first;
+        }
+        ramses::RamsesObject *o = it->second;
+        const uint32_t type = o ? (uint32_t)o->getType() : 0;
+        int t = 0;
+        while (o && t < 5 && types_.data[t] != type)
+            t++;
+        if (!o || t == 5) {
+            *why = o ? name + " is not a data object of numbers" : "no data object " + name;
+            return false;
+        }
+        if (v.size() < kDataWidth[t]) {
+            *why = name + " takes " + std::to_string(kDataWidth[t]) + " values";
+            return false;
+        }
+        switch (t) {
+        case 0: return ok(static_cast<ramses::DataFloat *>(o)->setValue(v[0]));
+        case 1: return ok(static_cast<ramses::DataInt32 *>(o)->setValue((int32_t)std::lround(v[0])));
+        case 2: return ok(static_cast<ramses::DataVector2f *>(o)->setValue(v[0], v[1]));
+        case 3: return ok(static_cast<ramses::DataVector3f *>(o)->setValue(v[0], v[1], v[2]));
+        default: return ok(static_cast<ramses::DataVector4f *>(o)->setValue(v[0], v[1], v[2], v[3]));
+        }
+    }
+
+    bool flush(uint64_t tag) override
+    {
+        const ramses::status_t s = scene_->flush(ramses::ESceneFlushMode_Synchronous, tag);
+        if (!ok(s) && !flush_failing_)
+            log_error("ramses: flush %llu: %s", (unsigned long long)tag, client_.getStatusMessage(s));
+        flush_failing_ = !ok(s);
+        return ok(s);
+    }
+
+private:
+    void collect(Kind k, uint32_t type)
+    {
+        ramses::SceneObjectIterator it(*scene_, ramses::ERamsesObjectType(type));
+        while (ramses::RamsesObject *o = it.getNext()) {
+            objs_[k].push_back(o);
+            names_[k].push_back(o->getName() ? o->getName() : "");
+        }
+    }
+
+    ramses::RamsesClient &client_;
+    const Ramses19Types &types_;
+    /* The descriptions outlive the scene loaded from them. */
+    std::vector<std::unique_ptr<ramses::ResourceFileDescription>> files_;
+    ramses::Scene *scene_ = nullptr;
+    std::vector<const ramses::RamsesObject *> made_;
+    std::vector<ramses::RamsesObject *> objs_[kKinds];
+    std::vector<std::string> names_[kKinds];
+    std::map<std::string, ramses::RamsesObject *> data_;
+    bool flush_failing_ = false;
+};
+
 }  // namespace
 
 Ramses19Gpu::Ramses19Gpu(ramses::RamsesClient &client) : client_(client)
@@ -947,6 +1293,19 @@ std::unique_ptr<Graph> Ramses19Gpu::scene(const TargetSpec &t, std::string *err)
     if (!g->build(t, err))
         return nullptr;
     return std::unique_ptr<Graph>(g.release());
+}
+
+std::unique_ptr<FileScene> Ramses19Gpu::load(const TargetSpec &t, const std::string &file,
+                                             const std::vector<std::string> &res, std::string *err)
+{
+    if (!typed_)
+        typed_ = learn(client_, &types_, err);
+    if (!typed_)
+        return nullptr;
+    std::unique_ptr<Ramses19FileScene> s(new Ramses19FileScene(client_, types_));
+    if (!s->load(t, file, res, err))
+        return nullptr;
+    return std::unique_ptr<FileScene>(s.release());
 }
 
 }  // namespace crs

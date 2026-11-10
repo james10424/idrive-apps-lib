@@ -46,6 +46,13 @@ namespace ramses
         const uint8_t* m_data;
     };
 
+    // Object types and uniform data types. Their values are not reconstructed:
+    // a client learns them at run time from objects it makes (getType(),
+    // UniformInput::getDataType()). 32 bits wide, as the library's, so any
+    // value the library returns is a value of the type.
+    enum ERamsesObjectType : uint32_t { ERamsesObjectType_Invalid = 0 };
+    enum EEffectInputDataType : uint32_t { EEffectInputDataType_Invalid = 0 };
+
     enum EScenePublicationMode
     {
         EScenePublicationMode_LocalAndRemote = 0,

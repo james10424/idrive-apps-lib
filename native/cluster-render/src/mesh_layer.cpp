@@ -171,7 +171,7 @@ bool MeshLayer::attach(Graph *g, int64_t, std::string *err)
 
 void MeshLayer::detach(bool drop)
 {
-    forget_animations(drop);
+    forget_animations();
     for (auto &kv : parts_) {
         if (g_ && drop && kv.second.handle)
             g_->drop_part(kv.second.handle);

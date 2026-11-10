@@ -63,7 +63,7 @@
  *   request is outstanding per slot. After a release, the next request of
  *   the scene waits until the display confirms the release
  *   (Port::confirmed) and, when subscriptions are observable, the renderer
- *   has unsubscribed from the scene (in the emulator about 150 ms after the
+ *   has unsubscribed from the scene (on a test unit about 150 ms after the
  *   display's confirmation), at most kConfirmMs. A fetch the display fails within
  *   kFreshSceneMs of the scene's publication (its renderer not having seen
  *   the publication yet) is asked again after kFreshRetryMs, up to
@@ -82,7 +82,20 @@
  *   and flushes nothing. The scene goes only when another target needs its
  *   scene id: two targets with one scene id cannot both be requested (the
  *   second waits until the first is released), and the second's request
- *   takes the first's scene down before it publishes its own.
+ *   takes the first's scene down before it publishes its own. A scene the
+ *   scenes report stale (a scene file came or went) is unpublished: a
+ *   requested target that is wanted is released first and asked for again,
+ *   one not wanted keeps it until its release (the linger). A requested
+ *   target whose scene is outdated (its file replaced) keeps its slot: its
+ *   scene is unpublished and published again at once, and the renderer's
+ *   subscription is awaited as after a showing (rendering, below).
+ * - Fallback: a target with TargetSpec::fallback_scene_id (the panel) goes
+ *   over to the fallback id, logged, until the service restarts, when the
+ *   display refuses its scene id as unknown (Refusal::UnknownContent) or
+ *   the guard disables its own mapping. Its scene is taken down and
+ *   unpublished, and the target is asked for again on the ladder with a
+ *   scene of the fallback id, sharing it as any two targets with one id. A
+ *   target the guard has disabled on its own id starts on the fallback.
  * - The display service going away takes every target down; when it comes
  *   back, the targets still wanted are requested again after kSettleMs. The
  *   scenes stay published: RAMSES publication does not go through Dcsm2,
@@ -130,6 +143,9 @@ namespace crs {
 struct TargetSpec {
     std::string name;
     uint64_t slot = 0;
+    /* Clients may have the service load a scene file as its scene
+     * (PROTOCOL.md "Scene files"); <target>_scene_files. */
+    bool scene_files = false;
     uint32_t content_class = 0;
     uint64_t content = 0;   /* iDrive 8 */
     uint64_t scene_id = 0;
@@ -152,11 +168,16 @@ struct TargetSpec {
     /* The mapping guard's strikes that disable this mapping; 0: never
      * disabled, the strikes only logged (guard.h). Holds: 2. */
     int strike_limit = 0;
-    /* The stock HMI's pop-up slots the target gives way to (the HUD's media
-     * and list pop-ups, 0x322): while one of them shows content, the target
-     * is released and not asked for, so the pop-up keeps its place (asking
-     * again pushed it from the HUD to the cluster); yield_ms after it goes,
-     * the target is asked for again. */
+    /* The panel's (panel_fallback_scene_id; 0: none): the scene id it
+     * falls back to when the display refuses its own, scene_id
+     * (SlotManager::fall_back). The fallback's mapping has strike_limit 0. */
+    uint64_t fallback_scene_id = 0;
+    /* The stock HMI's slots the target gives way to (the HUD's: its lists,
+     * 0x322): while one of them shows content other than
+     * route guidance, and no wanting layer of the target has yield 0, the
+     * target is released and not asked for, so the pop-up keeps its place
+     * (asking again pushed it from the HUD to the cluster); yield_ms after it
+     * goes, the target is asked for again. */
     std::vector<uint64_t> yield_slots;
     /* Stock contents the target gives way to in any slot while one shows, and
      * yield_contents_ms after the last one goes. The HUD's: BMW's guidance
@@ -194,7 +215,8 @@ struct SlotInfo {
 /* Why a request was not granted. */
 enum class Refusal {
     Busy,         /* the slot is held: E_DCSM_PRIOTOOLOW, E_DCSM_CONTENT_ALREADYMAPPED */
-    Config,       /* the scene or client is unknown to the display */
+    UnknownContent, /* the scene is unknown to the display: E_DCSM_CONTENTID_UNKNOWN */
+    Config,       /* the client is unknown to the display */
     NoSlot,       /* the slot is unknown to the display: E_DCSM_SLOTID_UNKNOWN */
     FetchFailed,  /* E_FETCH_STATUS_FAILED */
     Transient,    /* no valid reply, the fetch removed before it showed */
@@ -236,6 +258,14 @@ public:
     /* The display took t's published scene again (parked or shown): the
      * renderer that subscribed to it at the fetch got it whole. */
     virtual void resent(const TargetSpec &, int64_t) {}
+    /* t's published scene is not the one its content needs any more (a
+     * scene file came or went, compositor.h): the slot manager takes it
+     * down and publishes it again, at once while the target is wanted or
+     * not requested, else once it is released. */
+    virtual bool stale(const TargetSpec &) const { return false; }
+    /* t's published scene is of a file since replaced: published again in
+     * place, the target not released (republish()). */
+    virtual bool outdated(const TargetSpec &) const { return false; }
 };
 
 enum class TargetState { Idle, Acquiring, Parked, Shown, Lingering, Waiting, Unavailable };
@@ -302,8 +332,10 @@ public:
     int index(const std::string &name) const;   /* -1 if unknown */
 
     /* What the target's layers want, recomputed by the compositor each tick:
-     * shown at all, and whether a wanting layer contends with the stock HMI. */
-    void want(int target, bool wanted, bool contend, bool guide_hold = true);
+     * shown at all, whether a wanting layer contends with the stock HMI, lets
+     * the holds that follow it hold (guide_hold) and lets it give way to the
+     * stock pop-ups (yield). */
+    void want(int target, bool wanted, bool contend, bool guide_hold = true, bool yield = true);
     /* After the compositor's wants: each hold is wanted, contending, exactly
      * while the target it follows is shown and its wanting layers let it
      * hold (none has guide_hold false), no content outside
@@ -328,13 +360,14 @@ public:
      * re-park or re-show the display makes on its own is none. The display
      * service gone within Guard::kWindowMs of a hold's mapping event, held
      * still or released since, is a strike against the hold with the latest
-     * one; with none, against the
-     * target with the latest event (log only, as no target but a hold can
-     * be disabled). A hold that gives up (kHoldLosses) on faults alone,
-     * no yield to BMW's own content or move with the box among the losses,
-     * is a strike against it too, and a hold the display refuses for its
-     * slot (Refusal::NoSlot) is a strike and is not asked for again while
-     * the service runs. A target whose mapping is disabled is never wanted. */
+     * one (a target with a strike_limit counts as a hold here: the HUD, the
+     * panel's own id); with none, against the target with the latest event
+     * (log only). A hold that gives up (kHoldLosses) on faults alone, no
+     * yield to BMW's own content or move with the box among the losses, is
+     * a strike against it too, and a hold the display refuses for its slot
+     * (Refusal::NoSlot) is a strike and is not asked for again while the
+     * service runs. A target whose mapping is disabled is never wanted,
+     * unless it has a fallback scene id (Fallback). */
     void on_availability(bool up, int64_t now_ms);
     void set_guard(Guard *g);
     std::string guard_text() const;
@@ -377,7 +410,10 @@ public:
     /* Milliseconds until the next timer of any target; -1: none. */
     int64_t wake_in_ms(int64_t now_ms) const;
 
-    Holder holder_of(uint64_t content) const;
+    /* Who has content in slot: us only when the target requested with that
+     * scene id is the slot's (0x01000400 is the HUD's and, in 0x203, the
+     * HMI's speech dialog). */
+    Holder holder_of(uint64_t content, uint64_t slot) const;
     const Port &port() const { return *port_; }
 
     /* Evidence of the link or the display's renderer falling behind, for the
@@ -393,6 +429,7 @@ private:
     struct Target {
         TargetStatus status;
         bool wanted = false, contend = false, guide_hold = true;
+        bool yield = true;   /* no wanting layer has yield false (popup_blocks) */
         bool requested = false;
         bool disabled = false;       /* by the guard */
         bool declined = false;       /* a hold: the target it follows does not let it hold */
@@ -466,6 +503,9 @@ private:
     void acquire(int i, int64_t now_ms);
     void take_down(int i, int64_t now_ms);
     void drop_scene(int i);
+    /* A requested target's scene unpublished and published again, the
+     * target kept requested; refused, it waits on the ladder. */
+    void republish(int i, int64_t now_ms);
     /* The last release of the target's scene id is confirmed by the display
      * and its renderer has unsubscribed, or neither is awaited any longer. */
     bool settled(int i, int64_t now_ms) const;
@@ -499,7 +539,8 @@ private:
     /* The table shows the target's own scene id in its slot. */
     bool named(int i) const;
     /* A pop-up shows in one of the target's yield slots, or went less than
-     * its yield_ms ago. */
+     * its yield_ms ago; never while a wanting layer has yield false, and
+     * route guidance never counts (is_guidance). */
     bool popup_blocks(int i, int64_t now_ms);
     /* A shown scene the display removed: evidence for the governor, a
      * share target's only logged. */
@@ -535,6 +576,12 @@ private:
      * there first if requested; still waiting on the ladder until the same
      * time if it was, else idle. */
     void move_hold(int i, uint64_t slot, const std::string &why, int64_t now_ms);
+    /* A target with a fallback scene id over to it (Fallback, above): out
+     * of its slot, its scene unpublished, the id and its strike limit the
+     * fallback's. False, nothing done, for a target without one. The
+     * caller sets its state. */
+    bool fall_back(int i, const std::string &why, int64_t now_ms);
+    void use_fallback(int i);
 
     Port *port_;
     Scenes *scenes_;

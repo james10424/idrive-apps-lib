@@ -43,6 +43,9 @@ namespace ramses
     public:
         const char* getName() const;
         status_t setName(const char* name);
+        ERamsesObjectType getType() const;
+        // The object's type or one of its bases.
+        bool isOfType(ERamsesObjectType type) const;
         RAMSES19_LIBRARY_OWNED(RamsesObject);
     };
 

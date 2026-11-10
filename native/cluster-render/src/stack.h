@@ -34,13 +34,14 @@ struct StackItem {
     int z = 0;
     uint64_t seq = 0;   /* creation order */
     bool visible = true, ready = false, exclusive = false, prewarm = false, contend = false, guide_hold = true;
+    bool yield = true;
 };
 
 struct Arrangement {
     std::vector<uint32_t> order;       /* every layer, bottom to top */
     std::vector<uint32_t> drawn;       /* visible, ready and not below a drawn exclusive layer */
     std::vector<uint32_t> suspended;   /* visible and ready, but below a drawn exclusive layer */
-    bool wanted = false, contend = false, guide_hold = true;
+    bool wanted = false, contend = false, guide_hold = true, yield = true;
 };
 
 Arrangement arrange(std::vector<StackItem> items);

@@ -4,13 +4,17 @@
  * and, at each flush, copies it to what the display shows, as RAMSES
  * applies a flush whole. A test can refuse a write after some bytes or the
  * next flush, and read back what is shown: buffers, quads, views, parts and
- * the animations playing. */
+ * the animations playing. Scene files are text the test writes
+ * (FakeFileScene), read back the same way. */
 #ifndef CRS_FAKE_GRAPH_H
 #define CRS_FAKE_GRAPH_H
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -329,9 +333,99 @@ private:
     }
 };
 
+/* What a file scene shows, by object name: a node's visibility, its pose
+ * ("NAME t", "NAME s", "NAME r": xyz), a camera's viewport, a pass enabled,
+ * and values ("MESH:UNIFORM", or a data object's name). */
+struct FakeFileState {
+    std::map<std::string, bool> visible, enabled;
+    std::map<std::string, std::vector<float>> pose, values;
+    std::map<std::string, std::vector<uint32_t>> viewport;
+};
+
+/* A scene file of the host tests (FakeGpu::load), lines of text: "scene ID",
+ * then "node NAME PARENT", "mesh NAME PARENT UNIFORM...", "camera NAME
+ * PARENT" (PARENT - for none; meshes and cameras are nodes too), "pass
+ * NAME", "data NAME COMPONENTS". */
+class FakeFileScene : public FileScene {
+public:
+    std::vector<std::string> names[kKinds];
+    std::vector<int> parent;   /* per node: its parent's handle; -1: none */
+    std::map<std::string, std::vector<std::string>> uniforms;   /* mesh -> its uniforms */
+    std::map<std::string, size_t> data_width;
+    FakeFileState pending, shown;
+    uint64_t flushes = 0;
+    int listed = 0;   /* objects() calls */
+    std::string name;
+    std::map<std::string, FakeFileScene *> *registry = nullptr;
+
+    ~FakeFileScene() override
+    {
+        if (registry)
+            registry->erase(name);
+    }
+    std::vector<std::string> objects(Kind k) override
+    {
+        listed++;
+        return names[k];
+    }
+    bool visible(int node, bool on) override
+    {
+        for (size_t n = 0; n < names[Node].size(); n++)
+            for (int a = (int)n; a >= 0; a = parent[a])
+                if (a == node) {
+                    pending.visible[names[Node][n]] = on;
+                    break;
+                }
+        return node >= 0 && node < (int)names[Node].size();
+    }
+    bool transform(int node, Transform what, const float v[3]) override
+    {
+        pending.pose[names[Node].at(node) + " " + "tsr"[what]] = std::vector<float>(v, v + 3);
+        return true;
+    }
+    bool viewport(int camera, const uint32_t v[4]) override
+    {
+        pending.viewport[names[Camera].at(camera)] = std::vector<uint32_t>(v, v + 4);
+        return true;
+    }
+    bool enable(int pass, bool on) override
+    {
+        pending.enabled[names[Pass].at(pass)] = on;
+        return true;
+    }
+    bool uniform(int mesh, const std::string &u, const std::vector<float> &v, std::string *why) override
+    {
+        const std::vector<std::string> &has = uniforms[names[Mesh].at(mesh)];
+        if (std::find(has.begin(), has.end(), u) == has.end()) {
+            *why = "no uniform " + u;
+            return false;
+        }
+        pending.values[names[Mesh][mesh] + ":" + u] = v;
+        return true;
+    }
+    bool data(const std::string &d, const std::vector<float> &v, std::string *why) override
+    {
+        auto it = data_width.find(d);
+        if (it == data_width.end() || v.size() < it->second) {
+            *why = it == data_width.end() ? "no data object " + d : "too few values";
+            return false;
+        }
+        pending.values[d] = std::vector<float>(v.begin(), v.begin() + it->second);
+        return true;
+    }
+    bool flush(uint64_t) override
+    {
+        shown = pending;
+        flushes++;
+        return true;
+    }
+};
+
 class FakeGpu : public Gpu {
 public:
     int next_effect = 1;
+    std::map<std::string, FakeFileScene *> files;   /* loaded file scenes by target name */
+    int loads = 0;
     std::map<int, std::string> effects;   /* handle -> fragment shader */
     std::map<int, unsigned> attrs;        /* handle -> attributes its vertex shader reads */
     std::string reject;                   /* a fragment shader containing this fails to compile */
@@ -386,6 +480,63 @@ public:
     {
         auto it = live.find(target);
         return it == live.end() ? nullptr : it->second;
+    }
+    std::unique_ptr<FileScene> load(const TargetSpec &t, const std::string &file, const std::vector<std::string> &res,
+                                    std::string *err) override
+    {
+        std::ifstream in(file);
+        std::string word, id;
+        if (!(in >> word >> id) || word != "scene") {
+            *err = "the scene file did not load";
+            return nullptr;
+        }
+        for (const std::string &r : res)
+            if (!std::ifstream(r)) {
+                *err = "the scene file did not load";
+                return nullptr;
+            }
+        if (std::strtoull(id.c_str(), nullptr, 0) != t.scene_id) {
+            *err = "the file's scene id is " + id + ", not the target's";
+            return nullptr;
+        }
+        std::unique_ptr<FakeFileScene> s(new FakeFileScene());
+        std::string line;
+        while (std::getline(in, line)) {
+            std::istringstream ls(line);
+            std::string kind, name, up;
+            if (!(ls >> kind >> name))
+                continue;
+            if (kind == "pass") {
+                s->names[FileScene::Pass].push_back(name);
+                continue;
+            }
+            if (kind == "data") {
+                ls >> s->data_width[name];
+                continue;
+            }
+            ls >> up;
+            const auto &nodes = s->names[FileScene::Node];
+            const auto p = std::find(nodes.begin(), nodes.end(), up);
+            s->parent.push_back(p == nodes.end() ? -1 : (int)(p - nodes.begin()));
+            s->names[FileScene::Node].push_back(name);
+            if (kind == "camera")
+                s->names[FileScene::Camera].push_back(name);
+            if (kind == "mesh") {
+                s->names[FileScene::Mesh].push_back(name);
+                for (std::string u; ls >> u;)
+                    s->uniforms[name].push_back(u);
+            }
+        }
+        s->name = t.name;
+        s->registry = &files;
+        files[t.name] = s.get();
+        loads++;
+        return std::unique_ptr<FileScene>(s.release());
+    }
+    FakeFileScene *file(const std::string &target)
+    {
+        auto it = files.find(target);
+        return it == files.end() ? nullptr : it->second;
     }
 };
 

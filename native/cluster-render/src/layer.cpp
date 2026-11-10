@@ -160,13 +160,10 @@ void Layer::start_animations()
     }
 }
 
-void Layer::forget_animations(bool drop)
+void Layer::forget_animations()
 {
-    for (auto &kv : played_) {
-        if (drop && g_ && kv.second.handle)
-            g_->stop(kv.second.handle);
+    for (auto &kv : played_)
         kv.second.handle = 0;
-    }
 }
 
 /* ---- image ---------------------------------------------------------------- */
@@ -251,7 +248,7 @@ bool ImageLayer::attach(Graph *g, int64_t, std::string *err)
 
 void ImageLayer::detach(bool drop)
 {
-    forget_animations(drop);
+    forget_animations();
     if (g_ && drop) {
         if (quad_)
             g_->drop_quad(quad_);
@@ -430,7 +427,7 @@ bool EffectLayer::attach(Graph *g, int64_t, std::string *err)
 
 void EffectLayer::detach(bool drop)
 {
-    forget_animations(drop);
+    forget_animations();
     if (g_ && drop && quad_)
         g_->drop_quad(quad_);
     g_ = nullptr;

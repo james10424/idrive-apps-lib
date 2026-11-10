@@ -86,6 +86,12 @@
                 "value": "Cluster and HUD (experimental)",
                 "type": "Text"
               }
+            },
+            {
+              "ItemText": {
+                "value": "Off",
+                "type": "Text"
+              }
             }
           ]
         },
@@ -225,6 +231,32 @@
               "Text": {
                 "value": "HUD map: —",
                 "type": "Text"
+              }
+            }
+          ]
+        },
+        "61": {
+          "type": "checkBox",
+          "name": "wocHudKeep",
+          "properties": {
+            "Visible": {
+              "value": 1,
+              "type": "UInt"
+            },
+            "Focusable": {
+              "value": 3,
+              "type": "UInt"
+            }
+          },
+          "rows": [
+            {
+              "Text": {
+                "value": "Keep HUD map over BMW's pop-ups",
+                "type": "Text"
+              },
+              "eParam_RowSelected": {
+                "value": false,
+                "type": "Bool"
               }
             }
           ]

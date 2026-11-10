@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 Robert Nisipeanu */
 /* Host test for reading the renderer's subscriptions from RAMSES's console
- * (ramses_console.h), on lines the car's libramses printed in the emulator,
+ * (ramses_console.h), on lines the car's libramses printed on a test unit,
  * colour codes included: a subscription, an unsubscription of a scene the
  * client no longer knows, a participant gone (with the library's own
  * spelling) and a resource request parse with their scene id and guid, a

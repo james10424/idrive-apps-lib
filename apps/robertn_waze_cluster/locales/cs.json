@@ -93,6 +93,7 @@
     "5 GHz": "5 GHz",
     "2.4 GHz": "2,4 GHz",
     "Audio may cut out. On your iPhone, turn Wi-Fi off and on.": "Zvuk se může přerušovat. Na iPhonu vypněte a zapněte Wi-Fi.",
-    "Own settings for this driver": "Vlastní nastavení pro tohoto řidiče"
+    "Own settings for this driver": "Vlastní nastavení pro tohoto řidiče",
+    "Keep HUD map over BMW's pop-ups": "Ponechat mapu na HUD přes vyskakovací okna BMW"
   }
 }

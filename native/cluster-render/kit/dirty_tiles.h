@@ -15,8 +15,8 @@
  * adjacent written tiles in a tile row become one rectangle, and a run
  * directly below a rectangle of the same columns extends it, so a
  * full-width change is a single contiguous rectangle. Rectangles never take
- * in unchanged tiles: the bytes are what the link limits, and on the
- * emulator writes of 1 to 37 rectangles took the same time within noise. A
+ * in unchanged tiles: the bytes are what the link limits, and on a
+ * test unit writes of 1 to 37 rectangles took the same time within noise. A
  * plan has at most 102 rectangles at 1088x720, each at least 1 KB.
  *
  * Noise filter. A still CarPlay map is not still in the decoded pixels: the

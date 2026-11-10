@@ -15,7 +15,8 @@
  * Nothing blocks. The client connects, and reconnects whenever the service
  * goes (a restart, an update), making every asset and layer again with its
  * last settings: uniforms, mesh parts with their geometry and transforms,
- * binds and animations; on_ready() then asks the app for its content.
+ * binds and animations, and every scene file with its kept edits; on_ready()
+ * then asks the app for its content.
  * Frames are newest-wins per layer: a video frame not yet sent is replaced
  * by the next, so a producer never queues behind the display. A video
  * layer's last frame is kept once sent (and over a reconnect), so a frame
@@ -53,6 +54,7 @@ struct LayerOptions {
     bool prewarm = false;            /* asks for the slot before the first content */
     bool contend = false;            /* retries a slot the stock HMI takes */
     bool guide_hold = true;          /* false: the stock HMI's guidance box shows while this layer wants the map */
+    bool yield = true;               /* false: the target stays shown over the stock HMI's pop-ups while this layer wants it */
     float opacity = 1.0f;
     /* Video, image and effect layers: turned (degrees clockwise) and scaled about
      * the pivot, in pixels from the layer's top-left (its centre unless
@@ -134,6 +136,16 @@ struct Transform {
     float sx = 1, sy = 1, sz = 1;
 };
 
+/* A scene file the service loads as a target's whole scene, on a target
+ * that takes them (PROTOCOL.md "Scene files"). */
+struct SceneOptions {
+    std::string target;
+    std::string file;                  /* its absolute path */
+    std::vector<std::string> res;      /* its resource files' */
+    std::vector<std::string> sha256;   /* SHA-256 (hex) of the file, then of each resource file */
+    bool contend = false;              /* retries a slot the stock HMI takes */
+};
+
 /* An animation the renderer plays by itself (PROTOCOL.md "animate"). */
 struct AnimationOptions {
     uint32_t part = 0;      /* a mesh part; 0: the layer's quad, or a mesh layer's camera */
@@ -167,6 +179,15 @@ public:
     uint32_t mesh(const LayerOptions &lo, const MeshOptions &mo);
     /* An asset; 0 when its size is out of range. */
     uint32_t asset(const AssetOptions &ao);
+    /* A scene file as the target's scene; 0 without a file or a hash for
+     * each file. */
+    uint32_t scene(const SceneOptions &so);
+    /* Another file for the scene, in place: its kept edits go. */
+    void scene(uint32_t ref, const SceneOptions &so);
+    /* Edit lines for a scene (PROTOCOL.md "edit"), separated by newlines;
+     * kept by their key (edit_key), each replacing the kept line of its
+     * key, and sent again after a reconnect in the order last sent. */
+    void edit(uint32_t ref, const std::string &lines);
     /* Everything of lo but its target. */
     void set(uint32_t ref, const LayerOptions &lo);
     /* A mesh layer's camera and projection (orthographic or not as made). */
@@ -240,13 +261,15 @@ private:
         std::string transform;   /* its transform message; empty: none */
     };
     struct Layer {
-        std::string kind;                /* video, image, effect, mesh or asset */
+        std::string kind;                /* video, image, effect, mesh, asset or scene */
         LayerOptions lo;
         VideoOptions vo;
         ImageOptions io;
         EffectOptions eo;
         MeshOptions mo;
         AssetOptions ao;
+        SceneOptions so;
+        std::map<std::string, std::pair<uint64_t, std::string>> edits;   /* a scene's: key -> (when, line) */
         bool cluster_time = false;
         unsigned w = 0, h = 0, bpp = 4;  /* an image's or asset's pixels */
         /* The last message of each, sent again after a reconnect. */
@@ -277,6 +300,8 @@ private:
     void turn_fields(std::vector<std::pair<std::string, std::string>> *kv, const LayerOptions &lo) const;
     void mesh_fields(std::vector<std::pair<std::string, std::string>> *kv, const MeshOptions &mo) const;
     std::string layer_json(uint32_t ref, const Layer &l) const;
+    /* A scene's kept edit lines as one edit message, oldest first. */
+    std::string edits_json(uint32_t ref, const Layer &l) const;
     bool next_image(std::string *msg);
     std::string uniform_json(uint32_t ref, const std::string &name, const std::vector<float> &v) const;
     uint32_t add(const Layer &l);
@@ -288,6 +313,7 @@ private:
     int backoff_ = 0;
     std::map<uint32_t, Layer> layers_;
     uint32_t next_ref_ = 1;
+    uint64_t edits_ = 0;   /* edit lines taken */
     std::string in_;
     struct Frame {
         std::string head;

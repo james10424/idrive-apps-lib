@@ -18,8 +18,8 @@
  *
  * each one line after "<unix time> [ Info  ] ramses.Client        | ", the
  * time, level and context wrapped in colour codes; the (un)subscription of a
- * scene the client does not know says "for unknown scene" (VERIFIED in the
- * emulator with the car's libramses build, against its stand-in KOMBI
+ * scene the client does not know says "for unknown scene" (VERIFIED on a
+ * test unit with the car's libramses build, against its stand-in KOMBI
  * renderer). Scene ids print in decimal; 0x hex is read too.
  *
  * RamsesConsole moves fd 1 onto a pipe before any RAMSES object exists and

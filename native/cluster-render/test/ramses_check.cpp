@@ -7,14 +7,29 @@
  * again must be accepted, with nothing logged as an error by this service
  * or the library. Then the 3D and asset side: the backend's own answers for
  * every new call (uniform arrays, turned quads, views split into passes,
- * parts and their geometry, every kind of animation), and through the
- * compositor a lit rotating cube, an effect sampling an R8 glyph atlas and
- * an RGBA8 sprite with a vec4 array, a turned needle and an effect on the
- * renderer's clock, published again. Run by `make test-ramses ROOTFS=<dir>`;
+ * parts and their geometry, every kind of animation, and on RAMSES 19 the
+ * scene described whole, as to a renderer that subscribes, once animations
+ * have stopped), and through the compositor a lit rotating cube, an effect
+ * sampling an R8 glyph atlas and an RGBA8 sprite with a vec4 array, a turned
+ * needle and an effect on the renderer's clock, published again. On RAMSES
+ * 19, a scene file the library saves from a synthetic gauge (a needle on a
+ * pivot, a bar on a data object, a plain quad, a camera and two passes):
+ * loaded as the panel's scene through the compositor, every edit kind read
+ * back from the library, the needle turned at 30 edits a second,
+ * unpublished for the HUD's shared scene id, loaded again with every kept
+ * edit, replaced in place by a second file, dropped with the resources its
+ * loads made; a file of another scene id refused.
+ * Run by `make test-ramses ROOTFS=<dir>`;
  * built with CRS_RAMSES27 against iDrive 8's RAMSES 27 (graph_ramses27.h),
  * by `make test-ramses27 ROOTFS=<dir>`. */
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "../src/compositor.h"
@@ -130,6 +145,151 @@ void main() {
     float v = sin(p.x + u_time) + sin(p.y * 1.3 - u_time * 0.7) + sin(length(p) * 2.2 - u_time * 1.4);
     gl_FragColor = vec4(0.5 + 0.5 * cos(vec3(0.0, 2.1, 4.2) + v * 1.6), 1.0);
 })";
+
+#ifndef CRS_RAMSES27
+static bool ok_status(ramses::status_t s) { return s == ramses::StatusOK; }
+
+/* The synthetic scene file's effect: a flat colour, dimmed by u_level. */
+static const char *const kGaugeVs = R"(#version 100
+attribute vec2 a_position;
+uniform mat4 u_mvp;
+void main() {
+    gl_Position = u_mvp * vec4(a_position, 0.0, 1.0);
+})";
+
+static const char *const kGaugeFs = R"(#version 100
+precision mediump float;
+uniform vec4 u_color;
+uniform float u_level;
+void main() {
+    gl_FragColor = vec4(u_color.rgb * u_level, u_color.a);
+})";
+
+/* Saves a synthetic gauge, made here, as a scene file and a resource file:
+ * a needle on a pivot node (to turn), a bar whose level is a data object, a
+ * plain quad; an orthographic camera, a main and a glow pass. */
+static bool save_gauge(ramses::RamsesClient &client, ramses::sceneId_t id, const std::string &file,
+                       const std::string &res)
+{
+    ramses::SceneConfig sc;
+    ramses::Scene *s = client.createScene(id, sc, "gauge");
+    ramses::EffectDescription d;
+    d.setVertexShader(kGaugeVs);
+    d.setFragmentShader(kGaugeFs);
+    d.setUniformSemantic("u_mvp", ramses::EEffectUniformSemantic_ModelViewProjectionMatrix);
+    ramses::Effect *fx = client.createEffect(d, ramses::ResourceCacheFlag_DoNotCache, "gauge_fx");
+    static const float quad[8] = {0, 0, 1, 0, 0, 1, 1, 1};
+    static const uint16_t tris[6] = {0, 1, 2, 2, 1, 3};
+    const ramses::Vector2fArray *pos = client.createConstVector2fArray(4, quad);
+    const ramses::UInt16Array *idx = client.createConstUInt16Array(6, tris);
+    if (!s || !fx || !pos || !idx)
+        return false;
+    ramses::OrthographicCamera *cam = s->createOrthographicCamera("main_cam");
+    cam->setFrustum(0, 1920, 0, 720, 0.1f, 10);
+    cam->setViewport(0, 0, 1920, 720);
+    ramses::RenderGroup *group = s->createRenderGroup("main_group");
+    ramses::RenderGroup *glow = s->createRenderGroup("glow_group");
+    bool good = true;
+    const char *const passes[2] = {"main_pass", "glow_pass"};
+    for (int i = 0; i < 2; i++) {
+        ramses::RenderPass *p = s->createRenderPass(passes[i]);
+        good = good && p && ok_status(p->setCamera(*cam)) && ok_status(p->addRenderGroup(i ? *glow : *group)) &&
+               ok_status(p->setRenderOrder(i));
+    }
+    ramses::GroupNode *gauge = s->createGroupNode("gauge");
+    ramses::GroupNode *pivot = s->createGroupNode("needle_pivot");
+    ramses::DataFloat *level = s->createDataFloat("level");
+    good = good && gauge && pivot && level && ok_status(gauge->setTranslation(0, 0, -1)) &&
+           ok_status(pivot->setParent(*gauge)) && ok_status(pivot->setTranslation(960, 360, 0));
+    struct { const char *name; ramses::Node *parent; float x, y, w, h; } parts[] = {
+        {"needle", pivot, -4, 0, 8, 300}, {"bar", gauge, 200, 80, 600, 40}, {"quad", nullptr, 1500, 500, 200, 120}};
+    for (const auto &part : parts) {
+        ramses::MeshNode *m = s->createMeshNode(part.name);
+        ramses::Appearance *app = s->createAppearance(*fx, (std::string(part.name) + "_look").c_str());
+        ramses::GeometryBinding *geo = s->createGeometryBinding(*fx);
+        ramses::AttributeInput ain;
+        ramses::UniformInput color, dim;
+        good = good && m && app && geo && ok_status(fx->findAttributeInput("a_position", ain)) &&
+               ok_status(geo->setInputBuffer(ain, *pos)) && ok_status(geo->setIndices(*idx)) &&
+               ok_status(m->setAppearance(*app)) && ok_status(m->setGeometryBinding(*geo)) &&
+               ok_status(m->setTranslation(part.x, part.y, part.parent ? 0.0f : -1.0f)) &&
+               ok_status(m->setScaling(part.w, part.h, 1)) &&
+               ok_status(fx->findUniformInput("u_color", color)) && ok_status(fx->findUniformInput("u_level", dim)) &&
+               ok_status(app->setInputValueVector4f(color, 1, 1, 1, 1)) &&
+               ok_status(std::string(part.name) == "bar" ? app->bindInput(dim, *level) : app->setInputValueFloat(dim, 1)) &&
+               (!part.parent || ok_status(m->setParent(*part.parent))) &&
+               ok_status((std::string(part.name) == "quad" ? glow : group)->addMeshNode(*m));
+    }
+    ramses::ResourceFileDescription rd(res.c_str());
+    rd.add(fx);
+    rd.add(pos);
+    rd.add(idx);
+    ramses::ResourceFileDescriptionSet set;
+    set.add(rd);
+    good = good && ok_status(level->setValue(0.5f)) && ok_status(s->flush()) &&
+           ok_status(client.saveSceneToFile(*s, file.c_str(), set, false));
+    client.destroy(*s);
+    client.destroy(*fx);
+    client.destroy(*pos);
+    client.destroy(*idx);
+    return good;
+}
+
+/* An object of the scene the client knows by the name "gauge". */
+template <typename T> static T *gauge_object(ramses::RamsesClient &client, const char *name)
+{
+    ramses::Scene *s = static_cast<ramses::Scene *>(client.findObjectByName("gauge"));
+    return s ? static_cast<T *>(s->findObjectByName(name)) : nullptr;
+}
+
+/* The edits shown: the needle turned by turn, red, the level 0.75, the quad
+ * hidden, the viewport halved, the glow pass off. */
+static bool gauge_edited(ramses::RamsesClient &client, float turn)
+{
+    ramses::Node *pivot = gauge_object<ramses::Node>(client, "needle_pivot");
+    ramses::Node *quad = gauge_object<ramses::Node>(client, "quad");
+    ramses::MeshNode *needle = gauge_object<ramses::MeshNode>(client, "needle");
+    ramses::DataFloat *level = gauge_object<ramses::DataFloat>(client, "level");
+    ramses::LocalCamera *cam = gauge_object<ramses::LocalCamera>(client, "main_cam");
+    ramses::RenderPass *glow = gauge_object<ramses::RenderPass>(client, "glow_pass");
+    if (!pivot || !quad || !needle || !level || !cam || !glow) {
+        std::printf("     the loaded gauge's objects not found\n");
+        return false;
+    }
+    float rx = 0, ry = 0, rz = 0, v = 0, r = 0, g = 0, b = 0, a = 0;
+    ramses::UniformInput color;
+    const bool read = ok_status(pivot->getRotation(rx, ry, rz)) && ok_status(level->getValue(v)) &&
+                      ok_status(needle->getAppearance()->getEffect().findUniformInput("u_color", color)) &&
+                      ok_status(needle->getAppearance()->getInputValueVector4f(color, r, g, b, a));
+    std::printf("     rotation %g, level %g, colour %g %g %g, quad %s, viewport %ux%u, glow %s\n", rz, v, r, g, b,
+                quad->getVisibility() ? "shown" : "hidden", cam->getViewportWidth(), cam->getViewportHeight(),
+                glow->isEnabled() ? "on" : "off");
+    return read && rz == turn && v == 0.75f && r == 1 && g == 0 && !quad->getVisibility() &&
+           cam->getViewportWidth() == 960 && cam->getViewportHeight() == 360 && !glow->isEnabled();
+}
+
+static size_t resource_count(ramses::RamsesClient &client, uint32_t type)
+{
+    size_t n = 0;
+    ramses::ResourceIterator it(client, ramses::ERamsesObjectType(type));
+    while (it.getNext())
+        n++;
+    return n;
+}
+
+/* The scene called name described whole, as the library describes it to a
+ * renderer that subscribes: saved to a file, which is then removed. */
+static ramses::RamsesClient *describing;
+static bool described(const char *name)
+{
+    ramses::Scene *s = static_cast<ramses::Scene *>(describing->findObjectByName(name));
+    const std::string file = "/tmp/crs-ramses-check-" + std::to_string(getpid()) + "-described.ramses";
+    ramses::ResourceFileDescriptionSet none;
+    const bool saved = s && ok_status(describing->saveSceneToFile(*s, file.c_str(), none, false));
+    unlink(file.c_str());
+    return saved;
+}
+#endif
 
 /* A cube: 6 faces x 4 vertices with their normals. */
 static MeshData cube_mesh()
@@ -261,11 +421,23 @@ static void backend(Gpu &gpu)
     const int a11 = g->animate(p1, keyed(Animated::Uniform, 4, {0, 1000}, {1, 0, 0, 1, 0, 0, 1, 1}, true, "u_color"));
     ok("animations of every property, linear and step, on quads, parts and cameras",
        a1 && a2 && a3 && a4 && a5 && a6 && a7 && a8 && a9 && a10 && a11 && g->flush(4));
+    const int errors = cld::log_errors;
+    ok("refused: a uniform the shader lacks, and one of another width",
+       !g->animate(p2, keyed(Animated::Uniform, 1, {0, 1000}, {0, 1}, false, "u_none")) &&
+           !g->animate(p2, keyed(Animated::Uniform, 3, {0, 1000}, {0, 0, 0, 1, 1, 1}, false, "u_fade")) &&
+           cld::log_errors == errors + 2 && g->flush(4));
+    cld::log_errors = errors;
+#ifndef CRS_RAMSES27
+    ok("and the scene described whole", described("check"));
+#endif
     g->stop(a1);
     g->stop(a11);
     g->order(v1, 20);   /* the views together at the top: three passes, a segment fewer */
     g->order(v2, 24);
     ok("stopped, reordered", g->flush(5));
+#ifndef CRS_RAMSES27
+    ok("with animations stopped, the scene described whole to a renderer that subscribes", described("check"));
+#endif
     Projection near = persp;
     near.fov = 50;
     vr.x = 2000;   /* past the right edge: nothing to draw */
@@ -274,6 +446,9 @@ static void backend(Gpu &gpu)
     g->drop_view(v2);
     g->drop_quad(q3);
     ok("parts, views and quads dropped with their animations", g->flush(7));
+#ifndef CRS_RAMSES27
+    ok("and the scene described whole again", described("check"));
+#endif
     g.reset();
     gpu.drop_effect(glyph_fx);
     gpu.drop_effect(all_fx);
@@ -303,6 +478,16 @@ int main()
         return 1;
     }
     Ramses19Gpu gpu(client);
+    describing = &client;
+    /* Saved before any target has the panel's scene id. */
+    const std::string dir = "/tmp/crs-ramses-check-" + std::to_string(getpid());
+    mkdir(dir.c_str(), 0755);
+    const std::string gauge = dir + "/gauge.ramses", gauge_res = dir + "/gauge.ramres";
+    const std::string other = dir + "/other.ramses", other_res = dir + "/other.ramres";
+    const std::string gauge2 = dir + "/gauge2.ramses", gauge2_res = dir + "/gauge2.ramres";
+    ok("a synthetic scene file saved, a second one, and one of another scene id",
+       save_gauge(client, 0x01000400, gauge, gauge_res) && save_gauge(client, 0x01000400, gauge2, gauge2_res) &&
+           save_gauge(client, 0x010004f9, other, other_res));
 #endif
     std::string err;
     ok("the unit quad", gpu.init(&err));
@@ -314,8 +499,12 @@ int main()
     m.take_over_stock = true;
     TargetSpec p;
     p.name = "panel"; p.slot = 0x203; p.scene_id = 0x01000400; p.width = 1920; p.height = 720; p.linger_ms = 500;
+    p.scene_files = true;
+    TargetSpec h;   /* the panel's scene id */
+    h.name = "hud"; h.slot = 0x323; h.scene_id = 0x01000400; h.width = 800; h.height = 480; h.linger_ms = 500;
     slots.add(m);
     slots.add(p);
+    slots.add(h);
     GovernorConfig gc;
     Compositor comp(&gpu, &slots, gc, 250);
     slots.set_scenes(&comp);
@@ -486,6 +675,80 @@ int main()
     comp.remove_owner(5);
     run(4000);
     ok("all gone: the panel released", slots.status(1).state == TargetState::Idle);
+
+#ifndef CRS_RAMSES27
+    /* The synthetic scene file on the panel, through the compositor. */
+    SceneSource src;
+    src.file = gauge;
+    src.res = {gauge_res};
+    const uint32_t sc = comp.add_scene(6, 1, src, false, &err);
+    SceneEdits *ed = comp.edits(6, sc);
+    const std::vector<EditProblem> refused =
+        ed->add("--rotate ^needle_pivot$=0,0,45\n--uniform ^needle$:u_color=1,0,0,1\n--set level=0.75\n"
+                "--hide ^quad$\n--viewport ^main_cam$=0,0,960,360\n--pass-off ^glow_pass$\n--uniform ^bar$:u_level=1");
+    run(1500);
+    const size_t resources = resource_count(client, gpu.types().resource);
+    const std::vector<EditProblem> problems = ed->take_problems();
+    ok("the scene file loaded as the panel's scene, every edit kind applied in its first flush",
+       sc && refused.empty() && comp.state(sc, &reason) == LayerState::Shown && gauge_edited(client, 45));
+    ok("a uniform bound to a data object refused, reported", problems.size() == 1 &&
+                                                                 problems[0].reason.find("bound to a data object") != std::string::npos);
+    const std::set<uint32_t> uniforms(gpu.types().uniform, gpu.types().uniform + 11),
+        datas(gpu.types().data, gpu.types().data + 5);
+    ok("eleven uniform types and five data object types learned, each different",
+       uniforms.size() == 11 && datas.size() == 5 && !uniforms.count(0) && !datas.count(0));
+    for (int i = 0; i <= 30; i++) {
+        ed->add("--rotate ^needle_pivot$=0,0," + std::to_string(i * 3));
+        run(33);
+    }
+    ok("the needle turned at 30 edits a second", gauge_edited(client, 90) && comp.state(sc, &reason) == LayerState::Shown);
+
+    /* Published again: the HUD (the panel's scene id) shown while the HMI holds the panel. */
+    port.steal(p);
+    run(200);
+    LayerParams hp;
+    const uint32_t hud = comp.add_effect(7, 2, hp, "", kBars, 0, now, &err);
+    run(1500);
+    ok("the HUD shown meanwhile: the scene file's scene destroyed",
+       slots.status(2).state == TargetState::Shown && !client.findObjectByName("gauge"));
+    comp.remove_owner(7);
+    run(1000);
+    port.free_slot(p);
+    run(2500);
+    ok("the panel published again: the file loaded again with every kept edit, no resource more than the first time",
+       hud && comp.state(sc, &reason) == LayerState::Shown && gauge_edited(client, 90) &&
+           resource_count(client, gpu.types().resource) == resources);
+
+    SceneSource second;
+    second.file = gauge2;
+    second.res = {gauge2_res};
+    const int requests = port.requests;
+    comp.replace_scene(6, sc, second, false);
+    ed->add("--rotate ^needle_pivot$=0,0,60\n--uniform ^needle$:u_color=1,0,0,1\n--set level=0.75\n"
+            "--hide ^quad$\n--viewport ^main_cam$=0,0,960,360\n--pass-off ^glow_pass$");
+    run(500);
+    ok("another file in place: loaded and edited, the slot not asked for again, no resource more",
+       comp.state(sc, &reason) == LayerState::Shown && gauge_edited(client, 60) && port.requests == requests &&
+           resource_count(client, gpu.types().resource) == resources);
+    comp.remove_owner(6);
+    run(1500);
+    ok("dropped: the panel released, the scene and the resources its load made gone",
+       slots.status(1).state == TargetState::Idle && !client.findObjectByName("gauge") &&
+           resource_count(client, gpu.types().resource) < resources);
+
+    SceneSource wrong;
+    wrong.file = other;
+    wrong.res = {other_res};
+    const uint32_t bad = comp.add_scene(6, 1, wrong, false, &err);
+    run(500);
+    ok("a file of another scene id refused, nothing left of it",
+       bad && comp.state(bad, &reason) == LayerState::Error && reason.find("scene id is 0x10004f9") != std::string::npos &&
+           !client.findObjectByName("gauge"));
+    comp.remove_owner(6);
+    run(500);
+    const int removed = std::system(("rm -rf " + dir).c_str());
+    (void)removed;
+#endif
     ok("nothing logged as an error", cld::log_errors == 0);
     framework.disconnect();
     std::printf(failures ? "%d FAILED\n" : "all ok\n", failures);

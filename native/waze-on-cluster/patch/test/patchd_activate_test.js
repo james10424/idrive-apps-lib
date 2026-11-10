@@ -32,7 +32,7 @@
  */
 'use strict';
 
-var headUnit = require('./head_unit_env.js');   /* a HIGH head unit for every patcher and patchd this runs */
+var headUnit = require('./head_unit_env.js');   /* a HIGH head unit, coded KI_KOMBI_VARIANT 7, for every patcher and patchd this runs */
 
 var fs = require('fs');
 var os = require('os');
@@ -619,6 +619,121 @@ async function main() {
     ok('HIGH F, a backup without its record: nothing written', r.code === 0 && disk() === sha(SRCBUF) && marker() === null, JSON.stringify(r.result));
     try { fs.unlinkSync(MARK); } catch (e) {}
     headUnit.set(headUnit.HIGH);
+
+    /* The cluster coding. An install patches only a car coded
+     * KI_KOMBI_VARIANT 7, and its first patch there is on trial (unproven
+     * until boot recovery's watcher sees it run healthy). On another coding,
+     * or one that cannot be read, it writes nothing and reports the conflict
+     * the app shows, also on HIGH F over 0.8.2's restore; a patch CarPlay's
+     * Patch button wrote there is left as it is. */
+    var record = require('../patch_record.js');
+    function rec() { var x = record.current(TGT); return x ? { patched: x.patched, proven: x.proven, trial: x.trial } : null; }
+    fresh(SRCBUF);
+    r = hook('activate');
+    ok('coding 7: the install patches, pending, the record on trial', r.code === 0 && !r.result.conflict && marker() && marker().action === 'apply' &&
+        JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: false, trial: true }), JSON.stringify([r.result, rec()]));
+    headUnitStart();
+    r = hook('activate');
+    ok('coding 7: the next install leaves the trial as it is', r.code === 0 && !r.result.reboot &&
+        JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: false, trial: true }), JSON.stringify([r.result, rec()]));
+    /* A car an earlier release patched and recorded proven: an update keeps
+     * it proven, also when it brings the patch up to date. */
+    record.write(TGT, { patched: true, proven: true });
+    r = hook('activate');
+    ok('migration: a patch recorded proven by an earlier release stays proven', r.code === 0 && !r.result.reboot &&
+        JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: true }), JSON.stringify([r.result, rec()]));
+    var olderPatch = Buffer.from(SRCBUF);
+    olderPatch.writeUInt32LE(0xfff7f2bc >>> 0, SLOT);
+    Buffer.from('e89f000000', 'hex').copy(olderPatch, 0x18176c);
+    fs.writeFileSync(TGT + '.older', olderPatch, { mode: 0o755 });
+    fs.renameSync(TGT + '.older', TGT);
+    record.write(TGT, { patched: true, proven: true });
+    headUnitStart();
+    r = hook('activate');
+    ok('migration: an older patch recorded proven, brought up to date, stays proven', r.code === 0 && marker() && marker().action === 'apply' &&
+        /resolution -> 1088x480/.test(r.out) && JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: true }), JSON.stringify([r.result, rec()]));
+
+    var CODINGS = [['coding 9', 9, undefined, 'not supported on this car (KI_KOMBI_VARIANT 9)'],
+        ['invalid coding flags', 7, 0x0b, 'cluster coding unreadable'], ['no coding', null, undefined, 'cluster coding unreadable']];
+    for (var k = 0; k < CODINGS.length; k++) {
+        var c = CODINGS[k];
+        fresh(SRCBUF);
+        headUnit.coding(c[1], c[2]);
+        r = hook('activate');
+        ok(c[0] + ': the install writes nothing, no backup, no marker, the conflict', r.code === 0 && disk() === sha(SRCBUF) && !fs.existsSync(BAK) &&
+            marker() === null && !r.result.reboot && r.result.conflict === c[3] && rec() === null && ro(), JSON.stringify(r.result));
+        st = await daemonStatus();
+        ok(c[0] + ': patchd reports the original and the conflict', st.state === 'original' && st.conflict === c[3], JSON.stringify(st));
+        /* CarPlay's Patch button (patchd runs the patcher with --unproven). */
+        cp.execFileSync(process.execPath, [path.join(__dirname, '..', 'carplay_patch.js'), 'apply', '--target', TGT, '--panel', 'high', '--unproven', '--yes']);
+        headUnitStart();
+        before = disk();
+        r = hook('activate');
+        var buttonRec = c[1] === 9 ? { patched: true, proven: false } : { patched: true, proven: false, trial: true };
+        ok(c[0] + ': a patch CarPlay\'s Patch button wrote: the install leaves it and its record (' + (buttonRec.trial ? 'on trial' : 'unproven') + ')', r.code === 0 &&
+            disk() === before && marker() === null && r.result.conflict === c[3] && JSON.stringify(rec()) === JSON.stringify(buttonRec), JSON.stringify([r.result, rec()]));
+        r = hook('deactivate');
+        ok(c[0] + ': the removal reverts it as ever', r.code === 0 && disk() === sha(SRCBUF) && !fs.existsSync(BAK) && marker() && marker().action === 'revert' && ro(),
+            JSON.stringify(r.result));
+        headUnit.coding(7);
+        restored(headUnit.HIGHF);
+        ok(c[0] + ', HIGH F restored by 0.8.2: the original with our trusted backup', disk() === sha(SRCBUF) && fs.existsSync(BAK) && marker() === null);
+        headUnit.coding(c[1], c[2]);
+        r = hook('activate');
+        ok(c[0] + ', HIGH F restored by 0.8.2: the re-apply writes nothing, the conflict, left for the next install', r.code === 0 && disk() === sha(SRCBUF) &&
+            marker() === null && !r.result.reset && r.result.conflict === c[3] && !fs.existsSync(MARK), JSON.stringify(r.result));
+        headUnit.coding(7);
+        r = hook('activate');
+        ok(c[0] + ', HIGH F restored by 0.8.2: coded 7 again, the next install applies it, on trial', r.code === 0 && r.result.reset === true &&
+            marker() && marker().action === 'apply' && JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: false, trial: true }), JSON.stringify([r.result, rec()]));
+        try { fs.unlinkSync(MARK); } catch (e) {}
+        headUnit.set(headUnit.HIGH);
+    }
+
+    /* A car coded otherwise on which an earlier release's install wrote the
+     * patch and recorded it proven: while that patch has not started (its
+     * apply pending, or carplay running the file it replaced), an install
+     * puts its record on trial, carplay's bytes as they are. A patch that
+     * has started, and a variant-7 car's pending one, keep their record; a
+     * write that fails leaves it. */
+    var RECORD = TGT + '.woc-patch.json';
+    function earlierRelease(pending) {
+        headUnit.coding(7);
+        fresh(SRCBUF);
+        hook('activate');
+        if (!pending) fs.unlinkSync(PENDING);
+        record.write(TGT, { patched: true, proven: true });
+    }
+    var TRIAL = JSON.stringify({ patched: true, proven: false, trial: true }), PROVEN = JSON.stringify({ patched: true, proven: true, trial: undefined });
+    [['its apply pending', true], ['carplay running the file it replaced, no marker', false]].forEach(function (c) {
+        earlierRelease(c[1]);
+        before = disk();
+        headUnit.coding(9);
+        r = hook('activate');
+        ok('coding 9, an earlier release\'s patch not started (' + c[0] + '): its record on trial, carplay as it was, / read-only', r.code === 0 && disk() === before &&
+            JSON.stringify(rec()) === TRIAL && (marker() !== null) === c[1] && ro() && /recorded on trial/.test(r.out), JSON.stringify([r.result, rec()]));
+    });
+    earlierRelease(true);
+    var recBefore = fs.readFileSync(RECORD, 'utf8');
+    headUnit.coding(9);
+    fs.writeFileSync(RW_FAILS, '');
+    r = hook('activate');
+    fs.unlinkSync(RW_FAILS);
+    ok('coding 9, the record\'s write fails: the record as it was, exit 0', r.code === 0 && fs.readFileSync(RECORD, 'utf8') === recBefore && JSON.stringify(rec()) === PROVEN,
+        JSON.stringify([r.result, rec()]));
+    earlierRelease(true);
+    headUnitStart();
+    recBefore = fs.readFileSync(RECORD, 'utf8');
+    headUnit.coding(9);
+    r = hook('activate');
+    ok('coding 9, an earlier release\'s patch that started: its proven record untouched, the conflict', r.code === 0 && fs.readFileSync(RECORD, 'utf8') === recBefore &&
+        r.result.conflict === 'not supported on this car (KI_KOMBI_VARIANT 9)', JSON.stringify([r.result, rec()]));
+    earlierRelease(true);
+    recBefore = fs.readFileSync(RECORD, 'utf8');
+    r = hook('activate');
+    ok('coding 7, an earlier release\'s patch waiting for its start: its proven record untouched', r.code === 0 && fs.readFileSync(RECORD, 'utf8') === recBefore &&
+        marker() && marker().action === 'apply', JSON.stringify([r.result, rec()]));
+    headUnit.coding(7);
 
     ok('never a systemctl, kill or reboot', calls().length === 0, calls().join('; '));
 }

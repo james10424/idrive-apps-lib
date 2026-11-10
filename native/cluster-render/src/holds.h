@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 Robert Nisipeanu */
 /* The rules the service adds to iDrive 7's targets: the guide hold's
- * settings and the HUD's.
+ * settings, the HUD's and the panel's fallback.
  *
  * The guide hold's settings (cluster-render.conf "guide hold", iDrive 7):
  * unless guide_hold = 0, a hold (slots.h) that follows the map, appended to
@@ -37,11 +37,10 @@ struct HoldSettings {
 bool load_holds(const HoldSettings &cfg, const std::vector<uint64_t> &allowed, std::vector<TargetSpec> *targets,
                 std::string *warn);
 
-/* The HUD's slot and scene on iDrive 7 (README.md "The HUD"):
- * kHudOwnScene, the map's, the default, lets the HUD show while the panel
- * does (VERIFIED on the car in 0x323 next to the panel, Nov 8 2026), the
- * map and the HUD never asked for at once; kHudScene, the panel's, shares
- * the panel's instead. */
+/* The HUD's slot and scene on iDrive 7 (README.md "The HUD"): kHudScene,
+ * the default; kHudOwnScene, the map's, still taken for confs that set it
+ * before the panel had its own id (VERIFIED on the car in 0x323 next to the
+ * panel, Nov 8 2026): the map and the HUD are then never asked for at once. */
 const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400, kHudOwnScene = 0x010004f0;
 
 /* The iDrive 7 HUD's rules for t, the hud target: only slot kHudSlot with
@@ -51,6 +50,14 @@ const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400, kHudOwnScene = 0x010004
  * with *why, for any other slot or scene id or a take-over: the HUD is left
  * out. */
 bool hud_rules(TargetSpec *t, std::string *why);
+
+/* The panel target t's rules (README.md "Scene ids"): on a scene id other
+ * than the HUD's, the guard disables it after two strikes (strike_limit
+ * 2); and its fallback scene id, as written (panel_fallback_scene_id), a
+ * number in allowed, becomes t's fallback unless it is t's own id or empty.
+ * False, with *err, for any other fallback: the service does not start. */
+bool fallback_rules(TargetSpec *t, const std::string &fallback, const std::vector<uint64_t> &allowed,
+                    std::string *err);
 
 }  // namespace crs
 

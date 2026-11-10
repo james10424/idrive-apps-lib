@@ -5,8 +5,8 @@
 /**
  * Packs the tool in a folder holding its component.json (native/<id>) into
  * <out>/<id>@<version>.tgz, the artifact mgu-store's deploy tool installs:
- * the artifact's component.json (sha256 per file, units and drop-ins by
- * name), files/<path>, units/<name> and dropins/<unit>.d/<name>, sorted,
+ * the artifact's component.json (sha256 per file, units by name and
+ * runsInSafeMode, drop-ins by name), files/<path>, units/<name> and dropins/<unit>.d/<name>, sorted,
  * owner 0:0, one mtime
  * (SOURCE_DATE_EPOCH, else oap_pack's fixed one). A component.json `build`
  * command runs in the folder first.
@@ -88,7 +88,7 @@ function buildArtifact(compDir, outDir) {
             throw new Error(`${id}: unit ${path.relative(dir, from)} is missing`);
         }
         entries.push({ name: `units/${u.name}`, data: fs.readFileSync(from), mode: 0o644 });
-        return { name: u.name };
+        return u.runsInSafeMode === true ? { name: u.name, runsInSafeMode: true } : { name: u.name };
     });
     const dropins = (c.dropins || []).map((d) => {
         if (!d || !/^[A-Za-z0-9_.@-]{1,100}\.(service|socket|target|mount|path|timer)$/.test(d.unit || '') ||

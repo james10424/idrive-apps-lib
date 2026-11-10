@@ -42,6 +42,10 @@
                 <property id="2" value="1"/>
                 <property id="3" value="0"/>
             </component>
+            <component id="61" type="checkBox" widget="LT_CheckBox_1Row">
+                <property id="2" value="1"/>
+                <property id="3" value="3"/>
+            </component>
             <component id="52" type="slider" widget="LT_Slider_LeftJustified_Fill_Steps">
                 <property id="2" value="1"/>
                 <property id="3" value="3"/>

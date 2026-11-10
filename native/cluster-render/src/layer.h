@@ -36,6 +36,7 @@ struct LayerParams {
     int z = 0;
     bool visible = true, exclusive = false, prewarm = false, contend = false;
     bool guide_hold = true;   /* false: no guide hold for its target while it wants it (slots.h) */
+    bool yield = true;        /* false: its target gives way to no stock pop-up while it wants it (slots.h) */
     Rect rect;
     float opacity = 1.0f;
     /* A quad turned (degrees clockwise) and scaled about its pivot: px, py
@@ -180,9 +181,9 @@ protected:
     virtual void restore(uint32_t, const Animation &) {}
     /* Starts every animation in the scene just attached. */
     void start_animations();
-    /* The scene goes, or the layer: the animations' handles are forgotten,
-     * stopped first when drop. */
-    void forget_animations(bool drop);
+    /* The scene goes, or the layer: the animations' handles are forgotten
+     * (dropping a node stops its animations). */
+    void forget_animations();
 
     uint32_t id_;
     int target_;

@@ -12,8 +12,12 @@
  *
  *   Render control socket (RENDER_PATH)
  *     app  -> tool  {"cmd":"guide","hide":0|1}  BMW's turn box hidden while the map shows, or not
+ *                   {"cmd":"cluster"|"hud","on":"0"|"1"}, {"cmd":"hud","hud_width_pct"|"hud_x","hud_y"|"hud_keep_shown"}
+ *                    the map's settings (patchd saves them)
  *     tool -> app   {"ev":"status","state":"idle"|"starting"|"showing"|"frozen"|"error"|"unsupported",
- *                    "target","page","reason","hide_bmw_guidance","guide_disabled"}
+ *                    "target","page","reason","hide_bmw_guidance","guide_disabled","cluster","hud",
+ *                    "hud_state","hud_width_pct","hud_x","hud_y","hud_keep_shown"}
+ *                   (hud_keep_shown 0|1, absent from a tool before it)
  *                   (unsupported: the head unit refuses the tool, which stays idle)
  *                   (idle's reason: why a live stream shows no map; hide_bmw_guidance 0|1,
  *                    absent from a tool before the switch; guide_disabled 1: the cluster
@@ -103,7 +107,7 @@ const SAFE = '504x368+286+72';
 const HUD_MIN_PCT = 30, HUD_MAX_PCT = 85, HUD_STEP_PCT = 5, HUD_STANDARD_PCT = 57;
 const HUD_SIZE_STEPS = (HUD_MAX_PCT - HUD_MIN_PCT) / HUD_STEP_PCT;
 /* Where the map can show, the choices in their order on the page. */
-const SHOWN_ON = ['cluster', 'hud', 'both'];
+const SHOWN_ON = ['cluster', 'hud', 'both', 'off'];
 /* The HUD map moved from its centre, HUD_MOVE_PX a press, within +-HUD_MOVE_MAX; the render holds it inside the
  * HUD and reports the offset as far as it went. An asked size or place shows until the render's status has it,
  * HUD_ASKED_MS has passed, the render reconnects or patchd fails to save the size; then the render's own. */
@@ -250,10 +254,15 @@ function conflictText(conflict) {
         : t('Changed by another tool');
 }
 
-/* Where a render status shows the map: 'cluster', 'hud', 'both' or null. */
+/* Where a render status shows the map: 'cluster', 'hud', 'both', 'off'
+ * (neither), or null while it has not said. */
 function shownOnOf(rs) {
+    const said = (v) => v === 0 || v === 1;
+    if (!said(rs.cluster) || !said(rs.hud)) {
+        return null;
+    }
     const cluster = rs.cluster === 1, hud = rs.hud === 1;
-    return cluster && hud ? 'both' : cluster ? 'cluster' : hud ? 'hud' : null;
+    return cluster && hud ? 'both' : cluster ? 'cluster' : hud ? 'hud' : 'off';
 }
 
 /* After a zoom or turn-card value that waits for the next head-unit start. */
@@ -356,10 +365,9 @@ class WazeClusterControl extends EventEmitter {
         }
     }
 
-    /* ---- where the map shows: the cluster, the HUD (experimental) or both ---- */
-    /* 'cluster', 'hud' or 'both': as just asked for until the render reports
-     * it, else as the render last said; null while it has not, or when it
-     * shows the map on neither. */
+    /* ---- where the map shows: the cluster, the HUD (experimental), both or neither (Off) ---- */
+    /* 'cluster', 'hud', 'both' or 'off': as just asked for until the render
+     * reports it, else as the render last said; null while it has not. */
     shownOn() {
         return this._askedShownOn || (this.renderStatus && shownOnOf(this.renderStatus));
     }
@@ -387,14 +395,15 @@ class WazeClusterControl extends EventEmitter {
         return this.render.connected() && this.connectedPatch() && this.clusterOn() !== null && this.hudOn() !== null;
     }
 
-    /* Shows the map on the cluster, the HUD or both: the render at once,
-     * patchd saves it. A display turned on goes first, so the map is never
-     * on neither. */
+    /* Shows the map on the cluster, the HUD, both or neither ('off': BMW's
+     * own content on both): the render at once, patchd saves it. A display
+     * turned on goes first, so a switch from one display to the other never
+     * passes through neither. */
     showOn(choice) {
         if (!SHOWN_ON.includes(choice) || !this.canChooseShownOn() || choice === this.shownOn()) {
             return;
         }
-        const want = { cluster: choice !== 'hud', hud: choice !== 'cluster' };
+        const want = { cluster: choice === 'cluster' || choice === 'both', hud: choice === 'hud' || choice === 'both' };
         const changes = ['cluster', 'hud'].filter((d) => this._shows(d) !== want[d]).sort((a, b) => want[b] - want[a]);
         this._askedShownOn = choice;
         changes.forEach((d) => {
@@ -532,6 +541,26 @@ class WazeClusterControl extends EventEmitter {
         this.patch.send({ cmd: 'hud-pos', hud_x: x, hud_y: y });
         this.emit('change');
     }
+    /* ---- the HUD map over BMW's pop-ups ---- */
+    /* True while the HUD map stays shown over them, false while it gives way;
+     * null while the render has not said. */
+    hudKeepShown() {
+        const v = this.renderStatus && this.renderStatus.hud_keep_shown;
+        return v === 0 || v === 1 ? v === 1 : null;
+    }
+    /* Changes as the size and place do. */
+    canKeepHud() {
+        return this.canChangeHudSize() && this.hudKeepShown() !== null;
+    }
+    /* Flips it: the render at once, patchd saves it; the render's next status shows it. */
+    toggleHudKeep() {
+        if (this.canKeepHud()) {
+            const keep = !this.hudKeepShown();
+            this.render.send({ cmd: 'hud', hud_keep_shown: keep ? '1' : '0' });
+            this.patch.send({ cmd: 'hud-keep-shown', on: keep ? 1 : 0 });
+        }
+    }
+
     hudPositionText() {
         const at = this.hudOffset();
         if (!at) {
@@ -1029,7 +1058,7 @@ class WazeClusterControl extends EventEmitter {
             this._noteCardAsked(msg);
             this._wake();
             this.emit('change');
-        } else if (/^(cluster|hud|hud-size|hud-pos)-reply$/.test(msg.ev)) {
+        } else if (/^(cluster|hud|hud-size|hud-pos|hud-keep-shown)-reply$/.test(msg.ev)) {
             if (!msg.ok) {
                 this._log.info(`patchd did not save the setting: ${msg.reason || 'refused'}`);
             }

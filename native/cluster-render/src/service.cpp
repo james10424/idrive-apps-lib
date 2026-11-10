@@ -21,6 +21,7 @@ Service::Service(Gpu *gpu, Port *port, const ServiceConfig &cfg) : cfg_(cfg), sl
     }
     comp_.reset(new Compositor(gpu, &slots_, cfg_.budget, cfg_.upload_burst_ms));
     comp_->set_slow_flush_ms(cfg_.slow_flush_ms);
+    comp_->set_file_tick_ms(1000 / std::max(1, cfg_.fps));
     comp_->set_fade_ms(cfg_.fade_ms);
     slots_.set_scenes(comp_.get());
     Governor *gov = &comp_->governor();
@@ -28,6 +29,7 @@ Service::Service(Gpu *gpu, Port *port, const ServiceConfig &cfg) : cfg_(cfg), sl
         gov->evidence(e, now_ms, detail);
     };
     server_.reset(new Server(comp_.get(), &slots_, cfg_.backend));
+    server_->set_scene_files(cfg_.scene_files);
 }
 
 bool Service::start(std::string *err)

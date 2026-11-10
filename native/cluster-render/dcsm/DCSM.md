@@ -84,14 +84,14 @@ no padding; each struct is its members in order, with no length field.
 4. `reqUnmapContent`, then `reqUnfetchContent`.
 5. A refusal comes back in the reply as an `EDcsm2Status`.
 
-**Releases and fetches** (from the service's own logs; the car once, the
-emulator's stand-in every time):
+**Releases and fetches** (from the service's own logs; the car once, a
+test unit's stand-in every time):
 - A release of a mapped content is answered by the unmap's reply, the
   unfetch's reply, `mapStatusChange` to UNMAPPED and then
   `fetchStatusChange` REMOVED, within about 35 ms of the unmap.
 - The renderer subscribes to the scene at the fetch, 45-105 ms after it
   and before FETCHED, and unsubscribes after the unfetch, 150-170 ms after
-  the REMOVED (the RAMSES client logs both). Seen with the emulator's
+  the REMOVED (the RAMSES client logs both). Seen with a test unit's
   stand-in renderer only.
 - On the car, a fetch sent in the same tick as the scene's first
   publication was answered FETCH FAILED 12 ms later; the same fetch 2 s

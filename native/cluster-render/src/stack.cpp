@@ -53,6 +53,7 @@ Arrangement arrange(std::vector<StackItem> items)
             r.wanted = true;
             r.contend = r.contend || it.contend;
             r.guide_hold = r.guide_hold && it.guide_hold;
+            r.yield = r.yield && it.yield;
         }
     }
     return r;

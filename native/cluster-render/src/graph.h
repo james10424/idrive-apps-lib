@@ -3,7 +3,8 @@
 /* The renderer as the layers see it: quads drawn by effects, persistent
  * texture buffers written in place, uniforms, 3D views of meshes, animations
  * the renderer plays by itself, and one flush that carries a tick's changes.
- * All content the service draws is built from these, so a display generation
+ * All content the service draws is built from these, or is a scene file a
+ * client has it load whole (FileScene), so a display generation
  * is one implementation of Gpu and Graph: graph_ramses19.cpp for iDrive 7
  * (RAMSES 19, the KOMBI's renderer), graph_ramses27.cpp for iDrive 8
  * (RAMSES 27, the cluster's; README.md "iDrive 8").
@@ -161,7 +162,7 @@ public:
      * - the uniform of a quad or a part: 1, 3 or 4 values (float, vec3,
      *   vec4).
      * Returns the animation's handle, 0 when refused. A stopped animation
-     * leaves its property at its last value. */
+     * leaves its property at its last value; dropping its node stops it. */
     virtual int animate(int node, const Animation &a) = 0;
     virtual void stop(int anim) = 0;
 
@@ -169,10 +170,46 @@ public:
     virtual bool flush(uint64_t tag) = 0;
 };
 
+/* A target's scene loaded from a scene file (Gpu::load): drawn as the file
+ * has it, with its own cameras and passes, its objects changed by name
+ * (scene_edit.h). objects() lists each kind's names; an object's handle is
+ * its place in that list, valid while the scene is. Nothing a call changes
+ * is shown before flush(). */
+class FileScene {
+public:
+    enum Kind { Node, Mesh, Camera, Pass, kKinds };
+    enum Transform { Translation, Scaling, Rotation };
+    virtual ~FileScene() {}
+    virtual std::vector<std::string> objects(Kind k) = 0;
+    /* The node and every node under it. */
+    virtual bool visible(int node, bool on) = 0;
+    /* Rotation in degrees, about x, y and z as the scene's own nodes turn. */
+    virtual bool transform(int node, Transform what, const float v[3]) = 0;
+    /* x, y, w, h in pixels from the bottom-left, as the file's own. */
+    virtual bool viewport(int camera, const uint32_t v[4]) = 0;
+    virtual bool enable(int pass, bool on) = 0;
+    /* The uniform called name of the mesh's appearance: as many whole
+     * elements of v as it takes, ints rounded. False with *why: the mesh has
+     * no such uniform, it is bound to a data object, or v is too short. */
+    virtual bool uniform(int mesh, const std::string &name, const std::vector<float> &v, std::string *why) = 0;
+    /* The data object called name: 1 to 4 values, as its type takes. */
+    virtual bool data(const std::string &name, const std::vector<float> &v, std::string *why) = 0;
+    virtual bool flush(uint64_t tag) = 0;
+};
+
 /* The participant: effects (shared by every scene) and the scenes. */
 class Gpu {
 public:
     virtual ~Gpu() {}
+    /* The target's scene loaded from a scene file and its resource files
+     * (real paths, checked: scene_file.h), flushed and published; null with
+     * *err when it does not load or its scene id is not the target's. */
+    virtual std::unique_ptr<FileScene> load(const TargetSpec &, const std::string &,
+                                            const std::vector<std::string> &, std::string *err)
+    {
+        *err = "this display takes no scene files";
+        return nullptr;
+    }
     /* Compiles an effect: GLSL ES 1.00 (the HMI's own effects are). The
      * renderer fills these uniforms where a shader declares them: u_mvp,
      * u_mv, u_m, u_v, u_p (mat4: model-view-projection, model-view, model,

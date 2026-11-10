@@ -123,10 +123,11 @@ int start(const cld::Config &cfg, char **)
         return 1;
     }
     for (const TargetSpec &t : sc.targets)
-        log_info("target %s: slot 0x%llx class %u scene 0x%llx %ux%u, linger %d ms%s%s%s", t.name.c_str(),
+        log_info("target %s: slot 0x%llx class %u scene 0x%llx %ux%u, linger %d ms%s%s%s%s", t.name.c_str(),
                  (unsigned long long)t.slot, t.content_class, (unsigned long long)t.scene_id, t.width, t.height,
                  t.linger_ms, t.take_over_stock ? ", takes over from the stock HMI" : "",
-                 t.follows.empty() ? "" : ", held while shown: ", t.follows.c_str());
+                 t.scene_files ? ", takes scene files" : "", t.follows.empty() ? "" : ", held while shown: ",
+                 t.follows.c_str());
 
     std::vector<pollfd> fds;
     for (;;) {

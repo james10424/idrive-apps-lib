@@ -7,13 +7,14 @@
  *
  * The main page, one LT_State_Wide list in four sections, each under a
  * header row: General, HUD, CarPlay, Android Auto, then the restart's two
- * rows. General: Show on (a drop-down of Cluster, HUD and both), the Own
+ * rows. General: Show on (a drop-down of Cluster, HUD, both and Off), the Own
  * settings for this driver checkbox (profile_sync.js; greyed while no driver
  * profile is detected), Cluster map (the shared render's map), the Hide
  * BMW's turn box checkbox (the render's setting; a press asks the render to
  * flip it), Logs. HUD: HUD map (the map
- * on the HUD), the Size slider, Position with Move left, Move right, Move
- * up, Move down and Centre; the slider and the position buttons are greyed
+ * on the HUD), the Keep HUD map over BMW's pop-ups checkbox, the Size
+ * slider, Position with Move left, Move right, Move up, Move down and
+ * Centre; the checkbox, the slider and the position buttons are greyed
  * while the HUD is off or disabled after errors. CarPlay and Android Auto
  * have the same rows: Status, Patch, Remove patch; CarPlay adds CarPlay
  * Wi-Fi (the band, 5 GHz or 2.4 GHz) and, on 2.4 GHz, the line under it;
@@ -85,6 +86,7 @@ const GUIDE_NAME = 'wocGuide';
 const HEAD_GENERAL_NAME = 'wocHeadGeneral';
 const HEAD_HUD_NAME = 'wocHeadHud';
 const HUD_NAME = 'wocHud';
+const HUD_KEEP_NAME = 'wocHudKeep';
 const SHOW_ON_NAME = 'wocShowOn';
 const PROFILE_NAME = 'wocProfile';
 const HUD_SIZE_NAME = 'wocHudSize';
@@ -204,7 +206,7 @@ class WazeClusterApp extends OnlineApp {
         }
         const names = [STATUS_NAME, MAP_NAME, RESTART_STATUS_NAME, ENABLE_NAME, DISABLE_NAME, WIFI_NAME, WIFI_HINT_NAME, AA_STATUS_NAME,
             AA_ENABLE_NAME, AA_DISABLE_NAME, AA_ZOOM_NAME, AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME,
-            HEAD_GENERAL_NAME, HEAD_HUD_NAME, SHOW_ON_NAME, PROFILE_NAME, HUD_NAME, HUD_SIZE_NAME, HUD_POS_NAME]
+            HEAD_GENERAL_NAME, HEAD_HUD_NAME, SHOW_ON_NAME, PROFILE_NAME, HUD_NAME, HUD_KEEP_NAME, HUD_SIZE_NAME, HUD_POS_NAME]
             .concat(Object.values(HUD_MOVE_NAMES), [HUD_CENTRE_NAME, CAPTURE_NAME, CAPTURE_STATUS,
                 LOGS_NAME, LOGS_SAVE, LOGS_STATUS, LOGS_QR, LOGS_URL], LOGS_ROW_NAMES);
         names.forEach((name) => { this._components[name] = rhmi.getByName(name); });
@@ -229,6 +231,12 @@ class WazeClusterApp extends OnlineApp {
              * decides what it shows */
             delete this._written[`selected:${GUIDE_NAME}`];
             this._control.toggleGuidance();
+        });
+        this._bind(HUD_KEEP_NAME, () => {
+            /* as for the turn box: the render's answer decides the tick */
+            delete this._written[`selected:${HUD_KEEP_NAME}`];
+            this._control.toggleHudKeep();
+            this._render();
         });
         this._bind(PROFILE_NAME, () => {
             /* as for the turn box: patchd's answer decides the tick */
@@ -546,10 +554,10 @@ class WazeClusterApp extends OnlineApp {
         this._setVisibleComp(WIFI_HINT_NAME, hint !== '');
         const hide = c.hideGuidance();
         const unavailable = c.guidanceUnavailable();
-        /* where the map shows: the choice, '—' in its place while there is none */
+        /* where the map shows: the choice, '—' in its place until the render has said */
         const shownOn = SHOWN_ON.indexOf(c.shownOn());
         this._writeCell(SHOW_ON_NAME, 'HeaderText', t('Show on'), 'Text');
-        [t('Cluster'), t('HUD (experimental)'), t('Cluster and HUD (experimental)')].forEach((text, row) =>
+        [t('Cluster'), t('HUD (experimental)'), t('Cluster and HUD (experimental)'), t('Off')].forEach((text, row) =>
             this._writeCell(SHOW_ON_NAME, 'ItemText', row === 0 && shownOn < 0 ? '—' : text, 'Text', row));
         this._writeCell(SHOW_ON_NAME, 'SelectedItem', Math.max(shownOn, 0), 'UInt');
         this._setEnabled(SHOW_ON_NAME, c.canChooseShownOn());
@@ -562,6 +570,9 @@ class WazeClusterApp extends OnlineApp {
         this._write(GUIDE_NAME, t("Hide BMW's turn box"));
         this._setSelected(GUIDE_NAME, !!hide && !unavailable);
         this._write(HUD_NAME, c.hudText());
+        this._write(HUD_KEEP_NAME, t("Keep HUD map over BMW's pop-ups"));
+        this._setSelected(HUD_KEEP_NAME, c.hudKeepShown() === true);
+        this._setEnabled(HUD_KEEP_NAME, c.canKeepHud());
         /* the size slider and the place buttons: greyed while the HUD is off
          * or disabled (the HMI greys no label) */
         const adjust = c.canChangeHudSize();

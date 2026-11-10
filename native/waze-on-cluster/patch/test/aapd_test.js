@@ -514,7 +514,9 @@ function ro(t) { return /\bro\b/.test(fs.readFileSync(t.mounts, 'utf8')); }
         !fs.existsSync(t.bin + '.woc-orig') && !fs.existsSync(t.conf + '.woc-orig') && ro(t), r.out);
     if (HAVE_CP) ok('deactivate: carplay restored byte-exact too', sha(t.carplay) === sha(CARPLAY));
 
-    /* Not supported, untested, absent: CarPlay is patched as ever. */
+    /* Not supported, untested, absent: CarPlay is patched as ever, except
+     * on a car not coded 7, where CarPlay's patch is left too, with the
+     * same conflict. */
     [['coding 9', function (u) { fs.writeFileSync(u.coding, coding(9)); }, /not supported on this car \(KI_KOMBI_VARIANT 9\)/],
      ['an untested aapd', function (u) { fs.writeFileSync(u.bin, UNPROVEN); }, /"conflict":"untested aapd build"/],
      ['an aapd the locator refuses', function (u) { var b = Buffer.from(SRC); b[LOC.gate.offset + 6] = 3; fs.writeFileSync(u.bin, b); }, /not patchable: gate: variant check not found/],
@@ -533,7 +535,9 @@ function ro(t) { return /\bro\b/.test(fs.readFileSync(t.mounts, 'utf8')); }
         var x = hook(u, 'activate');
         ok('activate with ' + c[0] + ': Android Auto left as it is, exit 0', x.code === 0 && c[2].test(JSON.stringify(x.result.aa)) &&
             (before === null || sha(u.bin) === before) && sha(u.conf) === confBefore && !marker(u, 'aa-pending'), x.out);
-        if (HAVE_CP) ok('activate with ' + c[0] + ': CarPlay patched as ever', /map patch written/.test(x.result.status) && sha(u.carplay) !== sha(CARPLAY), JSON.stringify(x.result));
+        if (HAVE_CP && c[0] === 'coding 9') ok('activate with ' + c[0] + ': CarPlay left as it is, the same conflict', x.result.conflict === 'not supported on this car (KI_KOMBI_VARIANT 9)' &&
+            sha(u.carplay) === sha(CARPLAY) && !marker(u, 'activation-pending'), JSON.stringify(x.result));
+        else if (HAVE_CP) ok('activate with ' + c[0] + ': CarPlay patched as ever', /map patch written/.test(x.result.status) && sha(u.carplay) !== sha(CARPLAY), JSON.stringify(x.result));
     });
 
     /* A running aapd keeps its file linked and is handed over at removal. */

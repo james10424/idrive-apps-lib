@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include <algorithm>
+#include <iterator>
 
 #include "block_pack.h"
 #include "log.h"
@@ -91,8 +92,10 @@ Compositor::~Compositor()
     }
     for (auto &kv : assets_)
         kv.second.asset->detach(false);
-    for (Target &t : targets_)
+    for (Target &t : targets_) {
         t.graph.reset();
+        t.file.reset();
+    }
     if (atlas_fx_) gpu_->drop_effect(atlas_fx_);
     if (block_fx_) gpu_->drop_effect(block_fx_);
     if (image_fx_) gpu_->drop_effect(image_fx_);
@@ -464,6 +467,79 @@ void Compositor::touch(Layer *l)
         t.dirty = true;
 }
 
+uint32_t Compositor::add_scene(uint64_t owner, int target, const SceneSource &src, bool contend, std::string *err)
+{
+    if (target < 0 || target >= (int)targets_.size()) {
+        *err = "unknown target";
+        return 0;
+    }
+    for (const auto &kv : scenes_)
+        if (kv.second.target == target) {
+            *err = "the target has a scene file already";
+            return 0;
+        }
+    const uint32_t id = next_id_++;
+    SceneEntry &s = scenes_[id];
+    s.owner = owner;
+    s.target = target;
+    s.src = src;
+    s.contend = contend;
+    return id;
+}
+
+bool Compositor::replace_scene(uint64_t owner, uint32_t id, const SceneSource &src, bool contend)
+{
+    auto it = scenes_.find(id);
+    if (it == scenes_.end() || it->second.owner != owner)
+        return false;
+    SceneEntry &s = it->second;
+    s.src = src;
+    s.contend = contend;
+    s.error.clear();
+    s.edits = SceneEdits();
+    s.serial++;
+    return true;
+}
+
+SceneEdits *Compositor::edits(uint64_t owner, uint32_t id)
+{
+    auto it = scenes_.find(id);
+    return it == scenes_.end() || it->second.owner != owner ? nullptr : &it->second.edits;
+}
+
+std::string Compositor::scene_text(uint32_t id) const
+{
+    auto it = scenes_.find(id);
+    if (it == scenes_.end())
+        return std::string();
+    const SceneEntry &s = it->second;
+    return "on " + slots_->targets()[s.target].name + ": " + s.src.file + " and " +
+           std::to_string(s.src.res.size()) + " resource files, " + std::to_string(s.src.bytes / 1024) + " KB; " +
+           std::to_string(s.edits.kept()) + " edit lines kept";
+}
+
+uint32_t Compositor::content(int target) const
+{
+    for (const auto &kv : scenes_)
+        if (kv.second.target == target && kv.second.error.empty())
+            return kv.first;
+    return 0;
+}
+
+bool Compositor::stale(const TargetSpec &spec) const
+{
+    const int ti = slots_->index(spec.name);
+    const Target &t = targets_[ti];
+    return (t.graph || t.file) && content(ti) != (t.file ? t.file_of : 0);
+}
+
+bool Compositor::outdated(const TargetSpec &spec) const
+{
+    const Target &t = targets_[slots_->index(spec.name)];
+    auto s = scenes_.find(t.file_of);
+    return t.file && s != scenes_.end() && s->second.serial != t.file_serial;
+}
+
 Layer *Compositor::layer(uint64_t owner, uint32_t id)
 {
     auto it = layers_.find(id);
@@ -472,6 +548,9 @@ Layer *Compositor::layer(uint64_t owner, uint32_t id)
 
 uint64_t Compositor::owner_of(uint32_t id) const
 {
+    auto s = scenes_.find(id);
+    if (s != scenes_.end())
+        return s->second.owner;
     auto it = layers_.find(id);
     return it == layers_.end() ? 0 : it->second.owner;
 }
@@ -486,6 +565,13 @@ void Compositor::changed(Layer *l)
 
 void Compositor::remove(uint64_t owner, uint32_t id)
 {
+    /* A scene content: its scene is stale now (the slot manager). */
+    auto s = scenes_.find(id);
+    if (s != scenes_.end()) {
+        if (s->second.owner == owner)
+            scenes_.erase(s);
+        return;
+    }
     auto it = layers_.find(id);
     if (it == layers_.end() || it->second.owner != owner)
         return;
@@ -513,6 +599,8 @@ void Compositor::remove_owner(uint64_t owner)
     std::string err;
     for (uint32_t id : ids)
         remove_asset(owner, id, &err);
+    for (auto it = scenes_.begin(); it != scenes_.end();)
+        it = it->second.owner == owner ? scenes_.erase(it) : std::next(it);
 }
 
 void Compositor::arrange(int64_t now_ms)
@@ -537,11 +625,19 @@ void Compositor::arrange(int64_t now_ms)
             it.prewarm = l.params.prewarm;
             it.contend = l.params.contend;
             it.guide_hold = l.params.guide_hold;
+            it.yield = l.params.yield;
             items.push_back(it);
         }
         t.arr = crs::arrange(items);
+        if (const uint32_t sc = content((int)ti)) {
+            /* The target's scene is the content's file: it wants the
+             * target, and every layer waits (state()). */
+            t.arr.drawn.clear();
+            t.arr.wanted = true;
+            t.arr.contend = t.arr.contend || scenes_[sc].contend;
+        }
         fade((int)ti, t, now_ms);
-        slots_->want((int)ti, t.arr.wanted, t.arr.contend, t.arr.guide_hold);
+        slots_->want((int)ti, t.arr.wanted, t.arr.contend, t.arr.guide_hold, t.arr.yield);
         if (!t.graph)
             continue;
         for (size_t pos = 0; pos < t.arr.order.size(); pos++) {
@@ -595,12 +691,14 @@ void Compositor::fade(int ti, Target &t, int64_t now_ms)
             t.arr.wanted = true;
             t.arr.contend = t.last_contend;
             t.arr.guide_hold = t.last_guide_hold;
+            t.arr.yield = t.last_yield;
         }
     }
     if (t.arr.wanted && !t.fading_out) {
         t.last_drawn = t.arr.drawn;
         t.last_contend = t.arr.contend;
         t.last_guide_hold = t.arr.guide_hold;
+        t.last_yield = t.arr.yield;
     }
     /* The layers get it by steps, each in the target's next flush; 0 and 1
      * go at once. */
@@ -636,8 +734,13 @@ void Compositor::render(int64_t now_ms)
         /* Released: nothing of it is asked for. Parked: nothing of it is
          * on screen, and the link carries the HMI's content too. It stages
          * again once shown. */
-        if (!t.graph || !slots_->requested((int)ti) || slots_->status((int)ti).state == TargetState::Parked)
+        if ((!t.graph && !t.file) || !slots_->requested((int)ti) ||
+            slots_->status((int)ti).state == TargetState::Parked)
             continue;
+        if (t.file) {
+            render_file((int)ti, t, now_ms);
+            continue;
+        }
         /* A layer whose failed write left its buffer half written holds the
          * target: only its whole rewrite stages, and nothing flushes until
          * that goes, so the cluster keeps showing the last frame. */
@@ -684,22 +787,8 @@ void Compositor::render(int64_t now_ms)
         bool ok = false;
         if (failed)
             evidence(spec, Evidence::WriteRefused, now_ms, spec.name);
-        if (!failed && !holds(t)) {
-            const int64_t t0 = clock_us_();
-            ok = t.graph->flush(++t.tag);
-            const int64_t took = clock_us_() - t0;
-            if (!ok)
-                evidence(spec, Evidence::FlushFailure, now_ms, spec.name);
-            else if (took >= slow_flush_us_)
-                evidence(spec, Evidence::SlowFlush, now_ms, spec.name + " " + std::to_string(took / 1000) + " ms");
-            if (!ok && !t.flush_failing)
-                log_error("target %s: flush %llu refused", slots_->targets()[ti].name.c_str(),
-                          (unsigned long long)t.tag);
-            else if (ok && t.flush_failing)
-                log_info("target %s: flushing again from %llu", slots_->targets()[ti].name.c_str(),
-                         (unsigned long long)t.tag);
-            t.flush_failing = !ok;
-        }
+        if (!failed && !holds(t))
+            ok = flush((int)ti, t, now_ms);
         for (Asset *a : staged_assets)
             a->committed(ok);
         for (Layer *l : staged)
@@ -710,6 +799,48 @@ void Compositor::render(int64_t now_ms)
     }
     if (governor_.tick(now_ms))
         pacer_.set_rate(governor_.cap());
+}
+
+bool Compositor::flush(int ti, Target &t, int64_t now_ms)
+{
+    const TargetSpec &spec = slots_->targets()[ti];
+    const int64_t t0 = clock_us_();
+    const bool ok = t.file ? t.file->flush(++t.tag) : t.graph->flush(++t.tag);
+    const int64_t took = clock_us_() - t0;
+    if (!ok)
+        evidence(spec, Evidence::FlushFailure, now_ms, spec.name);
+    else if (took >= slow_flush_us_)
+        evidence(spec, Evidence::SlowFlush, now_ms, spec.name + " " + std::to_string(took / 1000) + " ms");
+    if (!ok && !t.flush_failing)
+        log_error("target %s: flush %llu refused", spec.name.c_str(), (unsigned long long)t.tag);
+    else if (ok && t.flush_failing)
+        log_info("target %s: flushing again from %llu", spec.name.c_str(), (unsigned long long)t.tag);
+    t.flush_failing = !ok;
+    return ok;
+}
+
+void Compositor::render_file(int ti, Target &t, int64_t now_ms)
+{
+    /* The content gone, its scene stays as last flushed until released. */
+    auto s = scenes_.find(t.file_of);
+    const bool mine = s != scenes_.end() && s->second.serial == t.file_serial;
+    /* Once a tick: lines coming faster stay due (wake_in_ms). */
+    if (mine && !t.dirty && file_tick_ms_ > 0 && t.file_flush_ms >= 0 && now_ms - t.file_flush_ms < file_tick_ms_)
+        return;
+    const bool staged = mine && s->second.edits.stage(t.file.get());
+    if (staged || t.dirty) {
+        t.dirty = !flush(ti, t, now_ms);
+        t.file_flush_ms = now_ms;
+    }
+}
+
+void Compositor::charge(int ti, uint64_t bytes, int64_t now_ms)
+{
+    crk::UploadPacer &pacer = pacer_for(ti);
+    pacer.ready(now_ms);
+    pacer.spend(bytes);
+    if (!slots_->targets()[ti].share)
+        load(bytes, now_ms);
 }
 
 crk::UploadPacer &Compositor::pacer_for(int target)
@@ -741,7 +872,7 @@ void Compositor::load(uint64_t bytes, int64_t now_ms)
 void Compositor::resent(const TargetSpec &spec, int64_t now_ms)
 {
     const int ti = slots_->index(spec.name);
-    uint64_t bytes = 0;
+    uint64_t bytes = targets_[ti].file ? targets_[ti].file_bytes : 0;
     for (const auto &kv : layers_)
         if (kv.second.layer->target() == ti)
             bytes += kv.second.layer->buffer_bytes();
@@ -750,11 +881,7 @@ void Compositor::resent(const TargetSpec &spec, int64_t now_ms)
             bytes += kv.second.asset->bytes();
     if (!bytes)
         return;
-    crk::UploadPacer &pacer = pacer_for(ti);
-    pacer.ready(now_ms);
-    pacer.spend(bytes);
-    if (!spec.share)
-        load(bytes, now_ms);
+    charge(ti, bytes, now_ms);
     log_info("target %s: its scene goes whole to the renderer again: %llu KB charged to the upload budget",
              spec.name.c_str(), (unsigned long long)(bytes / 1024));
 }
@@ -779,15 +906,41 @@ int64_t Compositor::wake_in_ms(int64_t now_ms) const
     for (const auto &kv : layers_)
         if (slots_->requested(kv.second.layer->target()))
             at(kv.second.layer->wake_in_ms(now_ms));
-    for (const Target &t : targets_)
+    for (size_t ti = 0; ti < targets_.size(); ti++) {
+        const Target &t = targets_[ti];
         if (t.graph && (t.fading_out || (t.fade > 0.0f && t.fade < 1.0f) || t.fade != t.applied))
             at(std::max<int64_t>(1, t.applied_ms + kFadeStepMs - now_ms));
+        /* due edits of a scene render() stages (requested, not parked) */
+        auto s = t.file ? scenes_.find(t.file_of) : scenes_.end();
+        if (s != scenes_.end() && s->second.serial == t.file_serial && slots_->requested((int)ti) &&
+            slots_->status((int)ti).state != TargetState::Parked && s->second.edits.due())
+            at(std::max<int64_t>(1, t.file_flush_ms + file_tick_ms_ - now_ms));
+    }
     return best;
 }
 
 LayerState Compositor::state(uint32_t id, std::string *reason) const
 {
     reason->clear();
+    auto sc = scenes_.find(id);
+    if (sc != scenes_.end()) {
+        const SceneEntry &s = sc->second;
+        if (!s.error.empty()) {
+            *reason = s.error;
+            return LayerState::Error;
+        }
+        const TargetStatus &ts = slots_->status(s.target);
+        const Target &t = targets_[s.target];
+        const bool loaded = t.file && t.file_of == id && t.file_serial == s.serial;
+        /* Where the service sees the renderer's subscriptions: once it has
+         * this scene (a file replaced in place is taken again). */
+        if (ts.state == TargetState::Shown && loaded && ts.rendering != Rendering::Checking)
+            return LayerState::Shown;
+        *reason = ts.state == TargetState::Shown && loaded
+                      ? "target shown, its renderer not subscribed to the scene yet"
+                      : std::string("target ") + target_state_name(ts.state) + (ts.reason.empty() ? "" : ": " + ts.reason);
+        return LayerState::Waiting;
+    }
     auto it = layers_.find(id);
     if (it == layers_.end())
         return LayerState::Hidden;
@@ -801,6 +954,10 @@ LayerState Compositor::state(uint32_t id, std::string *reason) const
         return LayerState::Hidden;
     if (!l.ready(now_ms_) || !assets_have(e))
         return LayerState::Stalled;
+    if (content(l.target())) {
+        *reason = "scene";
+        return LayerState::Waiting;
+    }
     const Target &t = targets_[l.target()];
     if (std::find(t.arr.suspended.begin(), t.arr.suspended.end(), id) != t.arr.suspended.end())
         return LayerState::Suspended;
@@ -851,6 +1008,27 @@ bool Compositor::publish(const TargetSpec &spec, std::string *err)
 {
     const int ti = slots_->index(spec.name);
     Target &t = targets_[ti];
+    if (const uint32_t id = content(ti)) {
+        SceneEntry &s = scenes_[id];
+        t.file = gpu_->load(spec, s.src.file, s.src.res, err);
+        if (!t.file) {
+            /* The client's file: it wants nothing more; the layers come back. */
+            s.error = *err;
+            log_warn("target %s: scene file %s refused: %s", spec.name.c_str(), s.src.file.c_str(), err->c_str());
+            return false;
+        }
+        t.file_of = id;
+        t.file_serial = s.serial;
+        t.file_bytes = s.src.bytes;
+        t.tag = 0;
+        t.flush_failing = false;
+        t.dirty = true;
+        s.edits.reset();   /* every kept line in the first flush (render()) */
+        charge(ti, t.file_bytes, now_ms_);
+        log_info("target %s: scene file %s published, %llu KB with its resource files, %zu edit lines kept",
+                 spec.name.c_str(), s.src.file.c_str(), (unsigned long long)(t.file_bytes / 1024), s.edits.kept());
+        return true;
+    }
     t.graph = gpu_->scene(spec, err);
     if (!t.graph)
         return false;
@@ -895,6 +1073,8 @@ void Compositor::unpublish(const TargetSpec &spec)
         if (kv.second.asset->target() == ti)
             kv.second.asset->detach(false);
     t.graph.reset();
+    t.file.reset();
+    t.file_of = 0;
     t.dirty = false;
 }
 

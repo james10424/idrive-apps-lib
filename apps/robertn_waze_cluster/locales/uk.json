@@ -93,6 +93,7 @@
     "5 GHz": "5 ГГц",
     "2.4 GHz": "2,4 ГГц",
     "Audio may cut out. On your iPhone, turn Wi-Fi off and on.": "Звук може перериватися. На iPhone вимкніть і знову ввімкніть Wi-Fi.",
-    "Own settings for this driver": "Власні налаштування для цього водія"
+    "Own settings for this driver": "Власні налаштування для цього водія",
+    "Keep HUD map over BMW's pop-ups": "Залишати карту на HUD поверх спливних вікон BMW"
   }
 }

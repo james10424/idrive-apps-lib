@@ -95,6 +95,7 @@
     "5 GHz": "5 GHz",
     "2.4 GHz": "2.4 GHz",
     "Audio may cut out. On your iPhone, turn Wi-Fi off and on.": "音频可能中断。请在 iPhone 上关闭再打开无线局域网。",
-    "Own settings for this driver": "此驾驶员的专属设置"
+    "Own settings for this driver": "此驾驶员的专属设置",
+    "Keep HUD map over BMW's pop-ups": "HUD 地图保持在 BMW 弹窗之上"
   }
 }

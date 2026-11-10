@@ -343,4 +343,19 @@ std::string json_object(const std::vector<std::pair<std::string, std::string>> &
     return o + "}";
 }
 
+std::string edit_key(const std::string &line)
+{
+    const size_t sp = line.find(' ');
+    std::string kind = line.substr(0, sp);
+    std::string rest = sp == std::string::npos ? std::string() : line.substr(sp + 1);
+    if (kind == "--show")
+        kind = "--hide";
+    else if (kind == "--pass-on")
+        kind = "--pass-off";
+    else if (kind == "--uniform" || kind == "--move" || kind == "--scale" || kind == "--rotate" ||
+             kind == "--viewport" || kind == "--set")
+        rest = rest.substr(0, rest.rfind('='));
+    return kind + " " + rest;
+}
+
 }  // namespace cr

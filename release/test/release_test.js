@@ -10,7 +10,8 @@
  * `deactivate`, `mguHmi`, `keepRunning`, ...) and leaves `requires` and
  * `uninstallable` to the catalog, as mgu-store's `deploy/hu artifact`; a malformed
  * `requires` or `mguHmi` is refused; the build tree takes each submodule at
- * the commit HEAD records, and refuses one its checkout lacks; and this
+ * the commit HEAD records, and refuses one its checkout lacks; a unit's
+ * `runsInSafeMode` reaches the artifact; and this
  * repository's Waze chain is
  * declared: the app (for iDrive 7) requires waze-on-cluster, which requires
  * cluster-render and a deploy tool that runs install hooks, and has both
@@ -25,6 +26,8 @@
  * any number of changes, keeps a version not released yet, resolves
  * "requires" of "next" and turns the CHANGELOG's Unreleased section into the
  * version's; an app's staged tree has no version in its folder name.
+ * Icons: an app's catalog entry names <id>.png with the sha256 of the PNG
+ * its entry point shows; a tool's names none.
  *
  *   node release/test/release_test.js
  */
@@ -100,6 +103,22 @@ test('a tool artifact keeps the fields the deploy tool reads', () => {
     assert.deepStrictEqual(m.files.map((f) => f.path), ['hook.js']);
 });
 
+test('a tool artifact keeps runsInSafeMode on the units that set it, and nothing on the others', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mgu-rel-test-'));
+    const dir = fixtureTool(root, Object.assign({}, FIXTURE, { units: [
+        { name: 'fixture-tool.service', from: 'systemd/fixture-tool.service' },
+        { name: 'fixture-tool-boot.service', from: 'systemd/fixture-tool.service', runsInSafeMode: true }] }));
+    const m = JSON.parse(untgz(buildArtifact(dir, path.join(root, 'out')))['component.json'].toString('utf8'));
+    assert.deepStrictEqual(m.units, [{ name: 'fixture-tool.service' }, { name: 'fixture-tool-boot.service', runsInSafeMode: true }]);
+});
+
+test('waze-on-cluster\'s units that put CarPlay and aapd back run in safe mode; the rest do not', () => {
+    const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'native', 'waze-on-cluster', 'component.json'), 'utf8'));
+    assert.deepStrictEqual(c.units.filter((u) => u.runsInSafeMode === true).map((u) => u.name),
+        ['waze-on-cluster-boot.service', 'waze-on-cluster-aa-boot.service', 'waze-on-cluster-recovery.service']);
+    assert.ok(c.units.every((u) => u.runsInSafeMode === undefined || u.runsInSafeMode === true));
+});
+
 test('a tool catalog entry carries requires, mguHmi and uninstallable; the catalog check accepts it', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mgu-rel-test-'));
     fs.mkdirSync(path.join(root, 'apps'));
@@ -168,8 +187,9 @@ test('the Waze chain: app -> waze-on-cluster -> cluster-render and a hook-runnin
         'the tool meets the app\'s requirement');
     assert.deepStrictEqual(Object.keys(tool.requires), ['mgu-deploy', 'cluster-render'], 'the deploy tool installs first');
     assert.strictEqual(tool.requires['mgu-deploy'], '0.7.11', 'hooks, and recmgr and crashNames names on the lists');
-    assert.ok(catalog.compareVersions(renderer.version, tool.requires['cluster-render']) >= 0,
-        'the renderer released beside it meets the tool\'s minimum');
+    const needs = tool.requires['cluster-render'];
+    assert.ok(needs === 'next' || (catalog.SEMVER.test(needs) && catalog.compareVersions(renderer.version, needs) >= 0),
+        'the renderer released beside it meets the tool\'s minimum, or is the one released with it');
     assert.deepStrictEqual(renderer.requires, { 'mgu-deploy': '0.4.0' });
     assert.deepStrictEqual(tool.mguHmi, ['ID7']);
     const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'native', 'waze-on-cluster', 'component.json'), 'utf8'));
@@ -374,6 +394,19 @@ test('versions: a CHANGELOG without what changed stops the release; "next" names
     assert.throws(() => writePlan(r.root, plan(components(r.root), [], r.root)), /Unreleased/);
     r.change('native/b/component.json', JSON.stringify(Object.assign(r.json('b'), { requires: { 'mgu-deploy': 'next' } }), null, 2));
     assert.throws(() => components(r.root), /names a component of this repository only/);
+});
+
+test('icons: the app\'s entry names <id>.png with the sha256 of the PNG its entry point shows; a tool\'s none', () => {
+    const app = components().find((c) => c.id === 'robertn_waze_cluster');
+    const png = path.join(__dirname, '..', '..', 'apps', 'robertn_waze_cluster', 'package', 'rhmiData', 'variantGroups', 'Common',
+        'images', 'robertn_waze_cluster_icon.png');
+    const sha = require('crypto').createHash('sha256').update(fs.readFileSync(png)).digest('hex');
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mgu-rel-icon-'));
+    fs.writeFileSync(path.join(out, 'a.tgz'), 'x');
+    const entry = catalogEntry(app, path.join(out, 'a.tgz'));
+    assert.strictEqual(entry.icon, 'robertn_waze_cluster.png');
+    assert.strictEqual(entry.iconSha256, sha);
+    components().filter((c) => c.kind === 'tool').forEach((c) => assert.strictEqual(catalogEntry(c, path.join(out, 'a.tgz')).icon, undefined));
 });
 
 test('an app\'s staged tree has no version in its folder name', () => {

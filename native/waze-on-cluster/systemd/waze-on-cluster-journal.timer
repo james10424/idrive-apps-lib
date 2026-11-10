@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Robert Nisipeanu
 [Unit]
-Description=waze-on-cluster journal keeper, 90 s after boot
+Description=waze-on-cluster journal keeper, 10 s after boot
 
 [Timer]
-# Late, so it takes nothing from the head unit's start; the service reads
-# what this boot logged before it.
-OnBootSec=90
-# systemd's default accuracy (1 min) would let it start up to 150 s after boot.
+# Early, so a start the head unit resets within its first minute or two
+# still leaves its lines on /var/opt; the service reads what this boot
+# logged before it. Nothing waits for it: a timer orders nothing, and the
+# service runs at the lowest CPU and I/O priority.
+OnBootSec=10
+# systemd's default accuracy (1 min) would let it start up to 70 s after boot.
 AccuracySec=1s
 
 [Install]

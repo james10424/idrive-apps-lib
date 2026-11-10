@@ -8,12 +8,15 @@
  * sampled by an effect with the renderer's u_time and a uniform array; a
  * mesh layer with a part, its geometry and an animation; the service
  * restarting under the client, whose layers, assets, parts and binds come
- * back by themselves; close() and connect() in one tick making one
- * connection. */
+ * back by themselves; a synthetic scene file on the panel, shown with the
+ * layers there waiting, its edit lines kept by key, a malformed one and one
+ * changing nothing reported, and dropped; close() and connect() in one tick
+ * making one connection. */
 'use strict';
 
 const assert = require('assert');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { ClusterRender } = require('../cluster_render_client.js');
@@ -34,8 +37,13 @@ async function until(cond, ms) {
     return cond();
 }
 
+/* Scene files come from here; a synthetic gauge (fake_graph.h FakeFileScene). */
+const scenes = fs.mkdtempSync('/tmp/crs-js-scenes-');
+const GAUGE = 'scene 0x010004f8\nnode gauge -\nnode needle_pivot gauge\nmesh needle needle_pivot u_color\n' +
+    'mesh quad - u_color\n';
+
 function startService() {
-    const p = spawn(bin, [sock], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const p = spawn(bin, [sock, scenes], { stdio: ['pipe', 'pipe', 'ignore'] });
     return new Promise((resolve) => p.stdout.once('data', () => resolve(p)));
 }
 
@@ -131,6 +139,25 @@ async function main() {
     ok('the asset, its effect, the mesh part and its geometry are made again',
         await until(() => eo.layer[label] === 'shown' && eo.layer[car] === 'shown', 2000));
 
+    const file = path.join(scenes, 'gauge.scene');
+    fs.writeFileSync(file, GAUGE);
+    fs.chmodSync(file, 0o644);
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    ok('a scene needs its file and hash', ovl.scene({ target: 'panel', file: file }) === 0);
+    const gauge = ovl.scene({ target: 'panel', file: file, sha256: [sha256] });
+    ovl.edit(gauge, '--rotate ^needle_pivot$=0,0,30\n--hide ^quad$\r\n');
+    ovl.edit(gauge, '--rotate ^needle_pivot$=0,0,45');
+    ok('a scene file on the panel: shown, the layers there waiting for it',
+        await until(() => eo.layer[gauge] === 'shown' && eo.layer[label] === 'waiting', 3000));
+    ok('its edits kept by key, the latest last',
+        Array.from(ovl.layers.get(gauge).edits.values()).join('|') === '--hide ^quad$|--rotate ^needle_pivot$=0,0,45');
+    ovl.edit(gauge, '--spin x\n--show ^nothing$');
+    ok('a malformed line refused, one that changes nothing reported, both named',
+        await until(() => eo.refused.some((r) => r.indexOf('edit: \'--spin x\'') === 0) &&
+            eo.refused.some((r) => r.indexOf('edit: \'--show ^nothing$\' changed nothing') === 0), 1000));
+    ovl.drop(gauge);
+    ok('dropped: the layers there shown again', await until(() => eo.layer[label] === 'shown', 3000));
+
     clearInterval(feed);
     ok('frames stopping: the video is stalled after its stall time',
         await until(() => ew.layer[map] === 'stalled', 3000));
@@ -145,6 +172,8 @@ async function main() {
     ovl.close();
     svc.kill();
     try { fs.unlinkSync(sock); } catch (e) { /* the service removed it */ }
+    fs.unlinkSync(file);
+    fs.rmdirSync(scenes);
     console.log(failures ? failures + ' FAILED' : 'all ok');
     process.exit(failures ? 1 : 0);
 }

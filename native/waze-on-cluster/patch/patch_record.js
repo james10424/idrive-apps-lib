@@ -7,12 +7,17 @@
  * about to start is our patch and whether its build is proven:
  *
  *   {"patched": true|false, "proven": true|false, "ino", "size", "mtime"
- *    (ms), and, after boot recovery's restore, "by": "recovery" or
- *    "refused", "at" (ISO time), and with "recovery" "fails"}
+ *    (ms), for carplay's patch "trial": true while a patch of a proven build
+ *    has not yet run healthy on this car, and after a revert
+ *    of one that ran healthy "healthy": true, and, after boot recovery's
+ *    restore, "by": "recovery" or "refused", "at" (ISO time), and with
+ *    "recovery" "fails"}
  *
  * Written by the patchers after each write to the target (and by an apply
  * or revert that finds nothing to do when the file has changed since the
- * record was written, or there is none), and by boot recovery's restore,
+ * record was written, or there is none), by boot recovery's watcher, which
+ * records a patch on trial proven once the service has run it healthy, and
+ * by boot recovery's restore,
  * with "by": "recovery" after failed starts or "refused" on a head unit
  * that refuses our parts; removed with the backup. It
  * describes the target only while its inode, size and modification time are

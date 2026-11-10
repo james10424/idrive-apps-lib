@@ -118,7 +118,7 @@ const SlotInfo *SlotManager::holder_row(int i) const
     if (it == slots_.end())
         return nullptr;
     for (const SlotInfo &s : it->second)
-        if ((s.map_status == 1 || s.map_status == 2) && s.content && holder_of(s.content) != Holder::Us)
+        if ((s.map_status == 1 || s.map_status == 2) && s.content && holder_of(s.content, s.slot) != Holder::Us)
             return &s;
     return nullptr;
 }
@@ -134,11 +134,12 @@ bool SlotManager::named(int i) const
     return false;
 }
 
-Holder SlotManager::holder_of(uint64_t content) const
+Holder SlotManager::holder_of(uint64_t content, uint64_t slot) const
 {
     if (content == 0)
         return Holder::None;
-    if (by_scene(content) >= 0)
+    const int i = by_scene(content);
+    if (i >= 0 && specs_[i].slot == slot)
         return Holder::Us;
     return stock_scene(content) ? Holder::Stock : Holder::Foreign;
 }
@@ -146,15 +147,38 @@ Holder SlotManager::holder_of(uint64_t content) const
 Holder SlotManager::other_holder(int i) const
 {
     const SlotInfo *s = holder_row(i);
-    return s ? holder_of(s->content) : Holder::None;
+    return s ? holder_of(s->content, s->slot) : Holder::None;
 }
 
 static const char kPopupReason[] = "a stock pop-up shows in its place";
+
+/* The HMI's route guidance (HmiMain3D's roadbook scenes,
+ * CRbIcRemoteActivityBase::getSceneID): on the HUD 0x01000200, 0x01000201,
+ * 0x01000210 (BMW's guidance) and 0x01000211; on the cluster 0x01000300,
+ * 0x01000301, 0x01000310-0x01000314 (0x01000310: the turn box) and
+ * 0x01000360. No target gives way to them in its yield slots. */
+static bool is_guidance(uint64_t content)
+{
+    switch (content) {
+    case 0x01000200: case 0x01000201: case 0x01000210: case 0x01000211:
+    case 0x01000300: case 0x01000301: case 0x01000310: case 0x01000311:
+    case 0x01000312: case 0x01000313: case 0x01000314: case 0x01000360:
+        return true;
+    default:
+        return false;
+    }
+}
 
 bool SlotManager::popup_blocks(int i, int64_t now_ms)
 {
     Target &t = t_[i];
     const TargetSpec &spec = specs_[i];
+    if (!t.yield) {
+        if (t.popup_ms >= 0)
+            log_info("target %s: a layer keeps it shown (yield 0); asking again", spec.name.c_str());
+        t.popup_ms = -1;
+        return false;
+    }
     bool shown = false;
     /* Stock content parked behind ours in our own slot (the HMI mapped its
      * content after ours: Google Maps' turn cards on the HUD) - a target
@@ -171,7 +195,7 @@ bool SlotManager::popup_blocks(int i, int64_t now_ms)
         if (rows == slots_.end())
             continue;
         for (const SlotInfo &r : rows->second)
-            shown = shown || (r.content != 0 && (r.map_status == 1 || r.map_status == 2));
+            shown = shown || (r.content != 0 && !is_guidance(r.content) && (r.map_status == 1 || r.map_status == 2));
     }
     /* A yield content: given way to while it shows, and yield_contents_ms
      * after the last one goes (a route's guidance blinks off and back). */
@@ -222,18 +246,53 @@ bool SlotManager::yields(int i, int64_t now_ms)
     return true;
 }
 
-void SlotManager::want(int i, bool wanted, bool contend, bool guide_hold)
+void SlotManager::want(int i, bool wanted, bool contend, bool guide_hold, bool yield)
 {
     t_[i].wanted = wanted && !t_[i].disabled;
     t_[i].contend = t_[i].wanted && contend;
     t_[i].guide_hold = guide_hold;
+    t_[i].yield = yield;
 }
 
 void SlotManager::set_guard(Guard *g)
 {
     guard_ = g;
-    for (size_t i = 0; i < specs_.size(); i++)
-        t_[i].disabled = g->disabled(specs_[i]);
+    for (size_t i = 0; i < specs_.size(); i++) {
+        const TargetSpec &spec = specs_[i];
+        if (spec.fallback_scene_id && g->disabled(spec)) {
+            log_warn("target %s: scene 0x%llx disabled by the mapping guard; using 0x%llx", spec.name.c_str(),
+                     (unsigned long long)spec.scene_id, (unsigned long long)spec.fallback_scene_id);
+            use_fallback((int)i);
+        }
+        t_[i].disabled = g->disabled(spec);
+    }
+}
+
+void SlotManager::use_fallback(int i)
+{
+    TargetSpec &spec = specs_[i];
+    spec.scene_id = spec.fallback_scene_id;
+    spec.fallback_scene_id = 0;
+    spec.strike_limit = 0;
+}
+
+bool SlotManager::fall_back(int i, const std::string &why, int64_t now_ms)
+{
+    Target &t = t_[i];
+    if (!specs_[i].fallback_scene_id)
+        return false;
+    log_warn("target %s: scene 0x%llx %s; falling back to 0x%llx until cluster-render restarts",
+             specs_[i].name.c_str(), (unsigned long long)specs_[i].scene_id, why.c_str(),
+             (unsigned long long)specs_[i].fallback_scene_id);
+    take_down(i, now_ms);
+    drop_scene(i);
+    released_.erase(specs_[i].scene_id);
+    use_fallback(i);
+    t.disabled = false;
+    t.mapped_ms = kNoMapping;
+    t.first_show = false;
+    t.ladder = 0;
+    return true;
 }
 
 bool SlotManager::hold_disabled(int target) const
@@ -410,7 +469,7 @@ void SlotManager::note_ahead(int i)
     if (it == slots_.end())
         return;
     for (const SlotInfo &s : it->second)
-        if (s.map_status != 0 && holder_of(s.content) == Holder::Stock)
+        if (s.map_status != 0 && holder_of(s.content, s.slot) == Holder::Stock)
             t_[i].ahead.insert(s.content);
 }
 
@@ -482,6 +541,24 @@ void SlotManager::drop_scene(int i)
     subs_.erase(specs_[i].scene_id);
     t_[i].scene = false;
     t_[i].resend_due = false;
+}
+
+void SlotManager::republish(int i, int64_t now_ms)
+{
+    const TargetSpec &spec = specs_[i];
+    Target &t = t_[i];
+    log_info("target %s: its scene file replaced: scene 0x%llx published again in place, the slot kept",
+             spec.name.c_str(), (unsigned long long)spec.scene_id);
+    scenes_->unpublish(spec);
+    subs_[spec.scene_id] = Subscribers();   /* its renderer subscribes again */
+    t.scene_ms = now_ms;
+    std::string err;
+    if (scenes_->publish(spec, &err))
+        return;
+    t.scene = false;
+    subs_.erase(spec.scene_id);
+    take_down(i, now_ms);
+    wait(i, Holder::None, true, "scene: " + err, now_ms);
 }
 
 void SlotManager::unpublish_all()
@@ -620,6 +697,8 @@ void SlotManager::on_availability(bool up, int64_t now_ms)
         /* One incident, one strike: the event is not struck again. */
         t_[last].mapped_ms = kNoMapping;
         t_[last].first_show = false;
+        if (t_[last].disabled)
+            fall_back(last, "disabled by the mapping guard", now_ms);
     }
     for (Target &t : t_)
         t.verdict = false;
@@ -710,7 +789,7 @@ void SlotManager::take_over(int i, int64_t now_ms)
     if (!spec.take_over_stock || !t.contend || now_ms < t.takeover_ms)
         return;
     const SlotInfo *row = holder_row(i);
-    if (!row || holder_of(row->content) != Holder::Stock)
+    if (!row || holder_of(row->content, row->slot) != Holder::Stock)
         return;
     /* Copies: a take-over's answer can replace the rows. */
     std::vector<SlotInfo> unmapped(1, *row), behind;
@@ -718,7 +797,7 @@ void SlotManager::take_over(int i, int64_t now_ms)
         if (!takes(i, row->content))
             return;   /* follow() yields to it */
         for (const SlotInfo &s : slots_[spec.slot])
-            if (s.map_status == 3 && holder_of(s.content) == Holder::Stock && takes(i, s.content))
+            if (s.map_status == 3 && holder_of(s.content, s.slot) == Holder::Stock && takes(i, s.content))
                 (t.ahead.count(s.content) ? unmapped : behind).push_back(s);
     }
     const int64_t gap = kTakeOverMs[std::min(t.takeovers, kTakeOverSteps - 1)];
@@ -786,6 +865,11 @@ void SlotManager::on_refused(uint64_t scene_id, Refusal r, const std::string &wh
         t.mapped_ms = kNoMapping;
         t.first_show = false;
         set(i, TargetState::Idle, Holder::None, "refused: " + why, now_ms);
+        return;
+    }
+    /* The display does not know the scene: the id is refused. */
+    if (r == Refusal::UnknownContent && fall_back(i, "refused: " + why, now_ms)) {
+        wait(i, Holder::None, true, "refused: " + why, now_ms);
         return;
     }
     Holder h = Holder::None;
@@ -931,7 +1015,7 @@ void SlotManager::on_slots(const std::vector<SlotInfo> &slots, int64_t now_ms)
             continue;
         auto old = slots_.find(specs_[i].slot);
         for (const SlotInfo &s : now_rows->second) {
-            if (s.map_status != 3 || holder_of(s.content) != Holder::Stock)
+            if (s.map_status != 3 || holder_of(s.content, s.slot) != Holder::Stock)
                 continue;
             int was = -1;
             if (old != slots_.end())
@@ -1044,6 +1128,20 @@ void SlotManager::tick(int64_t now_ms)
         const int i = (int)k;
         Target &t = t_[i];
         const TargetSpec &spec = specs_[i];
+
+        /* A scene file came or went: published again, the stale scene
+         * shown until then while nothing wants the target (its linger). */
+        if (t.scene && (!t.requested || t.wanted) && scenes_->stale(spec)) {
+            log_info("target %s: a scene file came or went: its scene goes and is published again", spec.name.c_str());
+            if (t.requested)
+                release(i, now_ms);
+            drop_scene(i);
+        } else if (t.scene && scenes_->outdated(spec)) {
+            if (t.requested)
+                republish(i, now_ms);
+            else
+                drop_scene(i);
+        }
         const TargetState s = t.status.state;
 
         if (!up) {

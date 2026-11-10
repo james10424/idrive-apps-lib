@@ -8,15 +8,16 @@
  *   github:<owner>/<repo>  GitHub Releases of the repository: each version is
  *                          the release <id>@<version> with its artifact as
  *                          the one asset; the release "catalog" holds
- *                          catalog.json. Runs in GitHub Actions only, with the
+ *                          catalog.json and the icons it names. Runs in GitHub Actions only, with the
  *                          workflow's GITHUB_TOKEN (GH_TOKEN). A repository
  *                          whose visibility is not MGU_PUBLISH_VISIBILITY
  *                          (default private; "any" takes either) is
  *                          refused; nothing here changes a repository's
  *                          visibility.
  *   dir:<path>             A local folder (relative paths: to the repository):
- *                          catalog.json and the artifacts side by side, a
- *                          test catalog for the emulator.
+ *                          catalog.json, the icons it names and the
+ *                          artifacts side by side, a test catalog for a
+ *                          test unit.
  *
  * A catalog entry's artifact url (listedUrl): in a public repository the
  * asset's release download (https://github.com/<owner>/<repo>/releases/
@@ -123,6 +124,17 @@ function releaseOf(tag) {
     }
 }
 
+/* The release "catalog", created when it is not there. */
+function catalogRelease() {
+    assertVisibility();
+    try {
+        gh(['release', 'view', CATALOG_TAG, '-R', WHERE]);
+    } catch (e) {
+        gh(['release', 'create', CATALOG_TAG, '-R', WHERE, '--latest=false', '--title', 'Catalog',
+            '--notes', 'catalog.json: the newest version of every component (release/README.md)']);
+    }
+}
+
 const targets = {
     dir: {
         preflight() {},
@@ -137,6 +149,10 @@ const targets = {
             fs.mkdirSync(WHERE, { recursive: true });
             fs.copyFileSync(file, path.join(WHERE, entry.artifact.name));
             return entry.artifact.name;
+        },
+        uploadCatalogAsset(file) {
+            fs.mkdirSync(WHERE, { recursive: true });
+            fs.copyFileSync(file, path.join(WHERE, path.basename(file)));
         },
         uploadCatalog(catalogFile) {
             fs.mkdirSync(WHERE, { recursive: true });
@@ -200,14 +216,13 @@ const targets = {
             }
             return assetUrl(asset);
         },
+        /* A file beside catalog.json in the release "catalog", under its name. */
+        uploadCatalogAsset(file) {
+            catalogRelease();
+            gh(['release', 'upload', CATALOG_TAG, '-R', WHERE, '--clobber', file]);
+        },
         uploadCatalog(catalogFile) {
-            assertVisibility();
-            try {
-                gh(['release', 'view', CATALOG_TAG, '-R', WHERE]);
-            } catch (e) {
-                gh(['release', 'create', CATALOG_TAG, '-R', WHERE, '--latest=false', '--title', 'Catalog',
-                    '--notes', 'catalog.json: the newest version of every component (release/README.md)']);
-            }
+            catalogRelease();
             gh(['release', 'upload', CATALOG_TAG, '-R', WHERE, '--clobber', catalogFile]);
         }
     }
@@ -228,5 +243,6 @@ module.exports = {
     preflight: (dryRun) => chosen().preflight(dryRun),
     listedUrl: (entry) => chosen().listedUrl(entry),
     uploadArtifact: (entry, file) => chosen().uploadArtifact(entry, file),
+    uploadCatalogAsset: (file) => chosen().uploadCatalogAsset(file),
     uploadCatalog: (catalogFile) => chosen().uploadCatalog(catalogFile)
 };
