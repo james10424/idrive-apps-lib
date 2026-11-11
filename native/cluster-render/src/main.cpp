@@ -135,6 +135,7 @@ void define_keys(cld::Config *cfg)
     cfg->define("upload_floor_kb_per_s", "2000");
     cfg->define("upload_step_kb_per_s", "500");
     cfg->define("upload_burst_ms", "250");
+    cfg->define("pixel_mib", "32");
     cfg->define("slow_flush_ms", "150");
     cfg->define("status_path", "/run/cluster-render/status.txt");
     cfg->define("guard_path", "/var/opt/cluster-render/state/guard.txt");
@@ -268,9 +269,10 @@ bool crs::service_config(const cld::Config &cfg, int generation, ServiceConfig *
     if (max_kb < 0 || max_kb > 1048576 || floor_kb < 0 || step_kb < 1 || cfg.num("upload_burst_ms") < 1 ||
         cfg.num("upload_burst_ms") > 1000 || cfg.num("fps") < 1 || cfg.num("fps") > 60 ||
         cfg.num("slow_flush_ms") < 10 || cfg.num("slow_flush_ms") > 10000 || cfg.num("fade_ms") < 0 ||
-        cfg.num("fade_ms") > 5000) {
+        cfg.num("fade_ms") > 5000 || cfg.num("pixel_mib") < 1 || cfg.num("pixel_mib") > 256) {
         *err = "upload_kb_per_s (0-1048576), upload_floor_kb_per_s (0 and up), upload_step_kb_per_s (1 and up), "
-               "upload_burst_ms (1-1000), slow_flush_ms (10-10000), fps (1-60) or fade_ms (0-5000) out of range";
+               "upload_burst_ms (1-1000), slow_flush_ms (10-10000), fps (1-60), fade_ms (0-5000) or pixel_mib (1-256) "
+               "out of range";
         return false;
     }
     /* A ceiling set below the floor is the cap: the governor then has no
@@ -282,6 +284,7 @@ bool crs::service_config(const cld::Config &cfg, int generation, ServiceConfig *
     sc.budget.step_bps = (uint64_t)step_kb * 1024;
     sc.slow_flush_ms = (int)cfg.num("slow_flush_ms");
     sc.upload_burst_ms = (int)cfg.num("upload_burst_ms");
+    sc.pixel_bytes = (uint64_t)cfg.num("pixel_mib") << 20;
     sc.fps = (int)cfg.num("fps");
     sc.fade_ms = (int)cfg.num("fade_ms");
     sc.socket_path = cfg.str("socket_path");

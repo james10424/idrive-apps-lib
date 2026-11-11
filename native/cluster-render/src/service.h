@@ -33,6 +33,7 @@ struct ServiceConfig {
     std::vector<TargetSpec> targets;
     GovernorConfig budget;   /* ceiling 5500, floor 2000, step 500 KB/s */
     int upload_burst_ms = 250;
+    uint64_t pixel_bytes = 32u << 20;   /* the compositor's pixel memory (pixel_mib) */
     int slow_flush_ms = 150;
     int fps = 30;                /* the loop's tick while a target is up */
     int fade_ms = 250;           /* a target's layers fade in when it is shown, and out before it is released */
