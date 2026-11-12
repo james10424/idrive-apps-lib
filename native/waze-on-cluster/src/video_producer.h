@@ -38,6 +38,13 @@
  * behind; the queue's waits, the frames skipped and a decoder that falls
  * behind even so go to the log and probe.txt.
  *
+ * Pacing (picture_pace.h). With picture_fps, a frame whose slot has not
+ * come is decoded without a picture, as a catch-up frame is. The newest
+ * such frame gets its picture late (Decoder::picture_skipped) once its slot
+ * has passed with nothing waiting to be decoded: the decode thread waits
+ * for that slot, and a frame decoded on the FIFO reader wakes it. Each
+ * frame is counted once, a late picture's when it was decoded.
+ *
  * Losses (stream_health.h). A lost packet costs only the NAL unit it was in
  * (rtp_h264.h); the decoder decodes through it and the frames it flags
  * corrupted are shown all the same. A gap is a new stream or a loss
@@ -64,6 +71,7 @@
 #include "h264_source.h"
 #include "keyframe_wait.h"
 #include "packet_queue.h"
+#include "picture_pace.h"
 #include "rtp_h264.h"
 #include "sps_info.h"
 #include "stream_health.h"
@@ -90,6 +98,9 @@ struct VideoConfig {
     /* A frame decoded within this long is live, while the alternate
      * screen's connection cannot tell (alt_screen.h). */
     int stall_ms = 6000;
+    /* Pictures at most this many a second (picture_pace.h); the frames in
+     * between are decoded without one. 0: every frame gets a picture. */
+    unsigned picture_fps = 0;
     FreezeConfig freeze;
 };
 
@@ -120,6 +131,14 @@ public:
      * first picture after it is wanted again comes whole, even when it is
      * the last one again, and counts as a change. */
     void set_pictures(bool on);
+    /* Frames decoded without a picture for picture_fps since the last
+     * call (main thread). */
+    uint64_t take_paced()
+    {
+        const uint64_t t = paced_total_.load(), d = t - paced_seen_;
+        paced_seen_ = t;
+        return d;
+    }
     /* When the last frame of the decode size was decoded; -1 for none. */
     int64_t last_frame_ms() const { return last_frame_ms_.load(); }
     /* The last minute's pictures of the decode size, how many of them
@@ -180,10 +199,21 @@ private:
     /* Under decode_mutex_. */
     bool start_decoder(std::string *err);
     void decode(const uint8_t *data, size_t len, bool end_of_au);
-    /* Decoder callback: swaps the decoder's atlas with back_ under lock, or
-     * marks the last picture as due again; a frame without a picture is only
-     * counted. Runs on the feeding thread inside decode(). */
-    void on_frame(const VideoFrame &f);
+    /* Decoder callback, each decoded frame: the pace's record of it, then
+     * on_frame. Under decode_mutex_. */
+    void on_decoded(const VideoFrame &f);
+    /* How long the decode thread waits for a packet: until the late picture
+     * of a frame the pace left without one is due (its slot and the lead),
+     * at most 500 ms. */
+    int late_wait_ms() const;
+    /* That frame's late picture, once its slot has come (decode thread,
+     * nothing waiting to be decoded). */
+    void picture_paced();
+    /* Swaps the decoder's atlas with back_ under lock, or marks the last
+     * picture as due again; a frame without a picture is only counted. A
+     * late picture's frame was counted when it was decoded. Under
+     * decode_mutex_. */
+    void on_frame(const VideoFrame &f, bool late);
 
     VideoConfig cfg_;
     size_t atlas_bytes_;
@@ -197,7 +227,7 @@ private:
     RtpH264::Sink rtp_sink_;   /* built once, so a packet allocates nothing */
     /* Serialises the decode thread and the FIFO reader: guards decoder_,
      * decoder_up_, decoding_, rtp_, packet_, gaps_, raw_retry_ms_,
-     * feed_source_, au_last_us_ and sps_log_. */
+     * feed_source_, au_last_us_, sps_log_ and the pace's state below. */
     mutable std::mutex decode_mutex_;
     bool decoder_up_ = false, fifo_up_ = false, udp_up_ = false, avb_up_ = false;
     bool decoding_ = false;          /* the decoder held a sequence after the last feed */
@@ -233,7 +263,16 @@ private:
     std::atomic<uint64_t> decoded_total_{0};
     std::atomic<bool> pictures_{true};
     std::atomic<bool> resumed_{false};   /* the next picture is the first since pictures were off */
-    bool catching_up_ = false;           /* the last feed decoded without a picture to catch up (decode thread) */
+    bool catching_up_ = false;           /* the last feed decoded without a picture to catch up (decode_mutex_) */
+    PicturePace pace_;                   /* decode_mutex_ */
+    /* The newest frame came out without a picture for the pace, and may
+     * still get it late (decode_mutex_). */
+    bool paced_ = false;
+    bool pace_skip_ = false;             /* this feed's frames go without a picture for the pace (decode_mutex_) */
+    /* Frames the pace left without a picture for good: a newer frame came,
+     * or no late picture was made. */
+    std::atomic<uint64_t> paced_total_{0};
+    uint64_t paced_seen_ = 0;            /* paced_total_ at the last take_paced (main thread) */
     std::atomic<int64_t> last_frame_ms_{-1};
     KeyframeWait keyframe_wait_;            /* main thread */
     std::string udp_status_, avb_status_, fifo_status_;   /* each source's state, for the probe report */

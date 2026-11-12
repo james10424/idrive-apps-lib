@@ -40,7 +40,16 @@
  * save at most a quarter of the bytes.
  *
  * One tile the size of the frame makes every plan nothing or the whole
- * frame. */
+ * frame.
+ *
+ * Hidden tiles. A caller that knows a tile cannot be seen (the render
+ * service: under an opaque layer, video_layer.h) passes it hidden: it is
+ * not written, and the buffer keeps what it held there. A hidden tile that
+ * differs within the threshold counts as quiet (quiet()) but never settles;
+ * the plan reports, per hidden tile, whether it differs from the frame past
+ * the threshold (held): such a tile must be planned again, unhidden, before
+ * it can be seen. A plan with a hidden tile is never the whole frame.
+ * Without hidden tiles a plan is as above. */
 #ifndef CRK_DIRTY_TILES_H
 #define CRK_DIRTY_TILES_H
 
@@ -65,6 +74,7 @@ struct UploadPlan {
     uint32_t dirty_tiles = 0, tiles = 0;   /* dirty: to be written, settled ones included */
     uint32_t quiet_tiles = 0;       /* different, but not past the threshold: left as shown */
     uint32_t settled_tiles = 0;     /* quiet for settle_ms, so written */
+    uint32_t hidden_tiles = 0;      /* passed hidden: not written (quiet_tiles counts those within the threshold) */
     uint32_t delta_tiles[kDeltaBins] = {};   /* the differing tiles by largest difference */
     size_t bytes = 0;               /* pixel bytes the rects carry */
 };
@@ -81,8 +91,13 @@ public:
                   uint32_t threshold = 0, int64_t settle_ms = 0);
 
     /* Plans writing cur over a texture holding shown. shown null: the whole
-     * frame. */
-    UploadPlan plan(const uint8_t *shown, const uint8_t *cur, int64_t now_ms);
+     * frame. hidden (tiles(), row by row): nonzero for a hidden tile (above);
+     * held, when given, is then set for each hidden tile, 1 where it differs
+     * from shown past the threshold and 0 where not, and left alone for the
+     * others. Both are ignored when shown is null. */
+    UploadPlan plan(const uint8_t *shown, const uint8_t *cur, int64_t now_ms, const uint8_t *hidden = nullptr,
+                    uint8_t *held = nullptr);
+    size_t tiles() const { return (size_t)cols_ * rows_; }
     /* The texture was written whole: no tile is quiet. */
     void reset();
     /* When the earliest quiet tile is due to be written, as of the last plan;
@@ -96,7 +111,7 @@ private:
     uint32_t w_, h_, bpp_, tile_w_, tile_h_, cols_, rows_, threshold_;
     int64_t settle_ms_;
     std::vector<int64_t> quiet_since_;   /* per tile; -1: equal to what is shown */
-    uint32_t quiet_ = 0;                 /* tiles with quiet_since_ set */
+    uint32_t quiet_ = 0;                 /* tiles the last plan left quiet, hidden ones within the threshold included */
     int64_t settle_due_ms_ = -1;
 };
 

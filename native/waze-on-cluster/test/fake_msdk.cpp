@@ -18,6 +18,7 @@ std::string picture_size;
 int delay = 0;
 uint8_t swallow = 0;
 bool timestamps = true;
+int refs = 0;
 
 namespace {
 
@@ -65,6 +66,7 @@ struct Session {
     int decode_task = 0, vpp_task = 0;
     bool gpu_copy = false;   /* the session was made with GPUCopy on */
     std::deque<mfxFrameSurface1 *> held;   /* decoded, not yet out (delay) */
+    std::deque<mfxFrameSurface1 *> refs;   /* the newest decoded pictures (refs) */
 } g;
 
 mfxSyncPoint task(int *t) { return reinterpret_cast<mfxSyncPoint>(t); }
@@ -180,6 +182,7 @@ mfxStatus MFXVideoDECODE_Init(mfxSession, mfxVideoParam *par)
     g.pic_w = f.CropW;
     g.pic_h = f.CropH;
     g.held.clear();
+    g.refs.clear();
     calls.push_back("init " + size(f.CropW, f.CropH));
     return MFX_ERR_NONE;
 }
@@ -216,16 +219,24 @@ mfxStatus MFXVideoDECODE_DecodeFrameAsync(mfxSession, mfxBitstream *bs, mfxFrame
     work->Data.Corrupted = 0;
     work->Data.FrameOrder = u.content;
     work->Data.TimeStamp = timestamps ? bs->TimeStamp : 0;
+    if (refs > 0) {
+        work->Data.Locked++;   /* a reference: not a work surface */
+        g.refs.push_back(work);
+        if ((int)g.refs.size() > refs) {
+            g.refs.front()->Data.Locked--;
+            g.refs.pop_front();
+        }
+    }
     if (swallow && u.content == swallow)
         return MFX_ERR_MORE_DATA;
     if (delay > 0) {
-        work->Data.Locked = 1;   /* held: not a work surface */
+        work->Data.Locked++;   /* held: not a work surface */
         g.held.push_back(work);
         if ((int)g.held.size() <= delay)
             return MFX_ERR_MORE_DATA;
         work = g.held.front();
         g.held.pop_front();
-        work->Data.Locked = 0;
+        work->Data.Locked--;
     }
     *out = work;
     *sync = task(&g.decode_task);

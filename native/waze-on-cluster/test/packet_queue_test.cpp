@@ -5,10 +5,10 @@
  * says how many went before it; a consumer that stalls for a while within
  * the queue's headroom loses nothing; large datagrams leave no large buffer
  * behind; each packet says how long it waited and whether a later frame
- * waits behind it. With that, a decoder slower than the stream that skips
- * the pictures of frames with a later one waiting (video_producer.h) keeps
- * the wait bounded and decodes every frame, and a fast one shows every
- * frame. */
+ * waits behind it; wake ends a pop's wait. With that, a decoder slower than
+ * the stream that skips the pictures of frames with a later one waiting
+ * (video_producer.h) keeps the wait bounded and decodes every frame, and a
+ * fast one shows every frame. */
 #include <algorithm>
 #include <cstdio>
 #include <future>
@@ -250,6 +250,29 @@ int main()
                     fast.pictures, fast.decoded, (long long)(fast.max_wait_us / 1000));
         ok("a decoder faster than the stream shows every frame",
            fast.decoded == 20 && fast.in_order && fast.pictures == 20);
+    }
+    {
+        /* wake ends a pop's wait at once, or the next pop's; a packet
+         * waiting still comes out. */
+        PacketQueue q(8, 1 << 20);
+        PacketQueue::Packet p;
+        auto waker = std::async(std::launch::async, [&q] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            q.wake();
+        });
+        const int64_t t0 = PacketQueue::now_us();
+        const bool got = q.pop(&p, 5000);
+        const int64_t waited = PacketQueue::now_us() - t0;
+        waker.get();
+        ok("wake: a waiting pop returns false at once", !got && waited < 2000000);
+        q.wake();
+        const int64_t t2 = PacketQueue::now_us();
+        ok("wake: before a pop, that pop returns at once", !q.pop(&p, 5000) && PacketQueue::now_us() - t2 < 2000000);
+        const int64_t t1 = PacketQueue::now_us();
+        ok("wake: once", !q.pop(&p, 100) && PacketQueue::now_us() - t1 >= 90000);
+        push_n(q, 7, 1, 32, 1);
+        q.wake();
+        ok("wake: a packet waiting still comes out", q.pop(&p, 0) && p.data.size() == 32);
     }
     if (failures) {
         std::printf("%d check(s) failed\n", failures);

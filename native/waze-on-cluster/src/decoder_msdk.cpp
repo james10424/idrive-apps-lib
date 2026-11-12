@@ -177,6 +177,12 @@ struct Decoder::State {
     uint32_t given = 0;
     int failed = 0;                  /* access units in a row that failed to decode */
     bool picture = true;             /* this call's frames get an atlas */
+    /* The newest frame that came out, when it came out without a picture
+     * and its surface still holds it: the decoder writes only into the
+     * work surfaces decode() hands it, and has not taken this one since.
+     * Null once a later frame comes out, once the decoder may have taken
+     * its surface, and after stop(). */
+    mfxFrameSurface1 *skipped_out = nullptr;
     unsigned level_bits = 0;
     crk::Spread pack_us, vpp_us;
     bool gpu_copy = false;           /* asked for (g_gpu_copy_failed decides) */
@@ -576,6 +582,7 @@ void Decoder::State::stop()
         MFXClose(session);
         session = nullptr;
     }
+    skipped_out = nullptr;
     pool.clear();
     pool_ptrs.clear();
 }
@@ -599,7 +606,14 @@ Decoder::State::Result Decoder::State::decode(mfxBitstream *bs, const FrameSink 
         }
         mfxFrameSurface1 *out = nullptr;
         mfxSyncPoint sync = nullptr;
+        const bool to_decode = !bs || bs->DataLength > 0;
         mfxStatus sts = MFXVideoDECODE_DecodeFrameAsync(session, bs, work, &out, &sync);
+        /* The decoder writes into a work surface only when it takes it: with
+         * bytes to decode, or keeping it (locked) or answering other than
+         * MORE_DATA. A surface it had nothing to write into still holds its
+         * picture. */
+        if (work == skipped_out && (to_decode || sts != MFX_ERR_MORE_DATA || work->Data.Locked))
+            skipped_out = nullptr;
         if (sts == MFX_WRN_DEVICE_BUSY) {
             if (++busy > kBusyRetries) {
                 fail(mfx_error("MFXVideoDECODE_DecodeFrameAsync", sts));
@@ -623,6 +637,7 @@ Decoder::State::Result Decoder::State::decode(mfxBitstream *bs, const FrameSink 
          * with a frame; with no frame the call is repeated. */
         if (sync) {
             stalls = 0;
+            skipped_out = nullptr;   /* skip() sets it again for this frame */
             if (!(picture ? convert(out, sync, cb) : skip(out, sync, cb)))
                 return Failed;
             if (rect_restart && bs)
@@ -651,9 +666,11 @@ bool Decoder::State::convert(mfxFrameSurface1 *in, mfxSyncPoint decoded, const F
      * surface's info is final and nothing of the decoder writes over
      * src_crop's rect, which replaces it for a picture of its size; the
      * decoder's crop goes back on every way out. */
-    mfxStatus sts = MFXVideoCORE_SyncOperation(session, decoded, kSyncTimeoutMs);
-    if (sts != MFX_ERR_NONE)
-        return fail(mfx_error("MFXVideoCORE_SyncOperation", sts));
+    if (decoded) {   /* null: waited for already (a late picture, picture_skipped) */
+        const mfxStatus sts = MFXVideoCORE_SyncOperation(session, decoded, kSyncTimeoutMs);
+        if (sts != MFX_ERR_NONE)
+            return fail(mfx_error("MFXVideoCORE_SyncOperation", sts));
+    }
     struct Restore {
         mfxFrameSurface1 *s;
         mfxFrameInfo own;
@@ -756,6 +773,7 @@ bool Decoder::State::skip(mfxFrameSurface1 *out, mfxSyncPoint sync, const FrameS
     if (sts != MFX_ERR_NONE)
         return fail(mfx_error("MFXVideoCORE_SyncOperation", sts));
     VideoFrame f = {w, h, out->Data.Corrupted, false, nullptr, held(out)};
+    skipped_out = out;
     cb(f);
     return true;
 }
@@ -846,6 +864,28 @@ void Decoder::forget_last()
 {
     if (s_)
         s_->have_last = false;
+}
+
+bool Decoder::picture_skipped(const FrameSink &cb, std::string *err)
+{
+    if (!s_ || !s_->running || !s_->skipped_out)
+        return false;
+    State &s = *s_;
+    /* A rect restart starts at an access unit: a picture that would ask for
+     * one gets none here, and the next frame's picture asks for it. */
+    const mfxFrameInfo &own = s.skipped_out->Info;
+    if (sequence_needs_check(s.crop, s.vpp.vpp.In.CropW, s.vpp.vpp.In.CropH, s.seq_w, s.seq_h) &&
+        s.rects.would_restart(rect_needs_reset(s.crop, s.vpp.vpp.In.CropW, s.vpp.vpp.In.CropH, own.CropW, own.CropH)))
+        return false;
+    mfxFrameSurface1 *in = s.skipped_out;
+    s.skipped_out = nullptr;
+    s.error.clear();
+    const bool ok = s.convert(in, nullptr, cb);
+    if (!ok || !s.error.empty()) {
+        *err = s.error;
+        return false;
+    }
+    return true;
 }
 
 void Decoder::shutdown() { s_.reset(); }

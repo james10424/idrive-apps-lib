@@ -154,7 +154,7 @@ bool MeshLayer::ready(int64_t) const
 bool MeshLayer::attach(Graph *g, int64_t, std::string *err)
 {
     g_ = g;
-    view_ = g->view(params.rect, mesh.projection, mesh.camera);
+    view_ = g->view(drawn_params().rect, mesh.projection, mesh.camera);
     bool good = view_ && g->show(view_, false) && g->order(view_, order_);
     for (auto it = parts_.begin(); good && it != parts_.end(); ++it)
         good = create(it->first, it->second);
@@ -201,7 +201,7 @@ void MeshLayer::place()
 {
     if (!g_)
         return;
-    g_->place(view_, params.rect);
+    g_->place(view_, drawn_params().rect);
     g_->camera(view_, mesh.projection, mesh.camera);
 }
 

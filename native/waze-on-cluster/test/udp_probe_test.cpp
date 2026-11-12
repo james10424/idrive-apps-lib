@@ -1,20 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* Host test for UdpSource and FramingProbe: datagrams sent to the bound port
- * reach the sink with boundaries preserved, and the probe classifies the
- * leading bytes (Annex-B / RTP / AVTP) and keeps the sizes. */
-#include <arpa/inet.h>
-#include <cassert>
+/* Host test for FramingProbe: it classifies the leading bytes (Annex-B /
+ * RTP / AVTP), keeps the sizes and reports the NAL cadence. */
 #include <cstdio>
-#include <cstring>
-#include <netinet/in.h>
 #include <string>
-#include <sys/socket.h>
-#include <unistd.h>
 #include <vector>
 
 #include "../src/framing_probe.h"
-#include "../src/udp_source.h"
 
 using namespace woc;
 
@@ -23,19 +15,6 @@ static void ok(const char *name, bool cond)
 {
     std::printf("%-4s %s\n", cond ? "ok" : "FAIL", name);
     if (!cond) failures++;
-}
-
-static void send_udp(uint16_t port, const std::vector<uint8_t> &p)
-{
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in a;
-    std::memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons(port);
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ssize_t n = sendto(fd, p.data(), p.size(), 0, (struct sockaddr *)&a, sizeof a);
-    (void)n;
-    close(fd);
 }
 
 int main()
@@ -163,28 +142,6 @@ int main()
         ok("cadence: keyframes only at stream start flagged late-join RISK", r.find("late-join: RISK") != std::string::npos);
         ok("cadence: summary carries the RTP guess and counts", p.summary().find("RTP") != std::string::npos &&
            p.summary().find("SPS=2 IDR=2") != std::string::npos);
-    }
-
-    /* --- UdpSource receive --- */
-    {
-        const uint16_t port = 20571;
-        FramingProbe probe;
-        std::vector<std::vector<uint8_t>> got;
-        UdpSource src;
-        std::string err;
-        auto sink = [&](const uint8_t *d, size_t n) { probe.record(d, n); got.emplace_back(d, d + n); };
-        bool started = src.start(port, sink, &err);
-        ok("udp: bind and start", started);
-        if (started) {
-            send_udp(port, {0, 0, 0, 1, 0x67});
-            send_udp(port, std::vector<uint8_t>(1200, 0x5a));
-            for (int i = 0; i < 100 && src.packets() < 2; i++) usleep(10 * 1000);
-            src.stop();
-            ok("udp: both datagrams received", src.packets() == 2);
-            ok("udp: boundaries preserved", got.size() == 2 && got[0].size() == 5 && got[1].size() == 1200);
-            ok("udp: byte count", src.bytes() == 1205);
-            ok("udp: probe saw the stream", probe.summary().find("Annex-B") != std::string::npos);
-        }
     }
 
     std::printf(failures ? "\n%d check(s) failed\n" : "\nall checks passed\n", failures);

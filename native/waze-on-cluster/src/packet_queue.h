@@ -88,7 +88,8 @@ public:
     bool pop(Packet *out, int timeout_ms)
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this] { return count_ > 0 || closed_; });
+        cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this] { return count_ > 0 || closed_ || woken_; });
+        woken_ = false;
         if (closed_ || count_ == 0)
             return false;
         Packet &p = slots_[head_];
@@ -106,6 +107,17 @@ public:
         head_ = (head_ + 1) % slots_.size();
         count_--;
         return true;
+    }
+
+    /* Ends the wait of a pop, or of the next one, at once: it returns the
+     * oldest packet, or false when there is none. */
+    void wake()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            woken_ = true;
+        }
+        cv_.notify_all();
     }
 
     /* Wakes a pop; every later pop returns false. */
@@ -177,6 +189,7 @@ private:
     uint32_t carry_ = 0;         /* drops not yet attributed to a packet still queued */
     uint64_t overflows_ = 0;
     bool closed_ = false;
+    bool woken_ = false;
 };
 
 }  // namespace woc

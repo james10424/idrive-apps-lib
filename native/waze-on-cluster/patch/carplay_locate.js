@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Robert Nisipeanu
-/* carplay_locate.js — finds the four carplay-patch edit sites (PATCH.md) in a
+/* carplay_locate.js — finds the five carplay-patch edit sites (PATCH.md) in a
  * carplay build by code and data structure. Each site has to be found exactly
  * once and pass its semantic checks; otherwise that edit carries ok:false and
  * a short reason naming what was not found. File offsets and virtual
  * addresses are converted through the ELF program headers, and function
  * bounds come from the .eh_frame_hdr search table. The variant, self-start and
  * resolution sites are found from the functions that load their own name
- * strings, and a site a dynamic relocation would rewrite at load is refused.
+ * strings, the map URL sites from the cluster display's builder and the log
+ * path the variant edit disables, and a site a dynamic relocation would
+ * rewrite at load is refused.
  * It only reads the buffer.
  *
  * Node 8 on the unit, no dependencies.
  */
 'use strict';
+
+var X86 = require('./x86_flow.js');
 
 var SINK_STOCK = 'avb://media_transport.avb_streaming.15?mime_type=video/H264';
 var SINK_NEXT = 'mCarPlay->GetDisplaySource(';
@@ -401,14 +405,18 @@ function fieldRead(im, f) {
     }
     return found.length === 1 ? found[0] : null;
 }
-function layoutRead(im, ctor) {
-    return im.callers(ctor.off).some(function (at) {
+/* The functions that call the constructor and then read the fields: { off,
+ * end } each, once. */
+function layoutReaders(im, ctor) {
+    var out = [];
+    im.callers(ctor.off).forEach(function (at) {
         var fn = im.func(at);
-        if (!fn) return false;
+        if (!fn || out.some(function (f) { return f.off === fn.off; })) return;
         var got = im.calls(at + 5, Math.min(fn.end, at + 0x100)).map(function (c) { return fieldRead(im, c.to); })
             .filter(function (r) { return r; });
-        return FIELDS.every(function (f) { return got.indexOf(f) >= 0; });
+        if (FIELDS.every(function (f) { return got.indexOf(f) >= 0; })) out.push(fn);
     });
+    return out;
 }
 
 /* The variant check called at `c`: 'high' for `[rdi] == IC_HIGH`, 'mid' for
@@ -465,9 +473,198 @@ function locateRes(im, str, refs) {
     if (high.err || mid.err) return { ok: false, reason: high.err || mid.err };
     if (high.to === mid.to) return { ok: false, reason: 'resolution: IC_HIGH and IC_MID share a builder' };
     if (Math.abs(high.to - ctor.off) > NEAR || Math.abs(mid.to - ctor.off) > NEAR) return { ok: false, reason: 'resolution: builders far from the constructor' };
-    if (!layoutRead(im, ctor)) return { ok: false, reason: 'resolution: geometry getters not found' };
+    var readers = layoutReaders(im, ctor);
+    if (!readers.length) return { ok: false, reason: 'resolution: geometry getters not found' };
     var b = builders[high.to];
-    return { ok: true, builder: high.to, mm: b.mm, px: b.px, safe1: b.safe1, safe2: b.safe2 };
+    return { ok: true, builder: high.to, mm: b.mm, px: b.px, safe1: b.safe1, safe2: b.safe2, readers: readers };
+}
+
+/* ---- Edit 5: the cluster display's initial URL ------------------------- */
+
+/* The URL the edit gives the cluster display, and the log string whose bytes
+ * hold it: patched, a shorter log text, its NUL, then the URL at URL_AT. */
+var MAP_URL = 'maps:/car/instrumentcluster/map';
+var SPARE_LOG = 'Head-Unit does not support Alternate Displays feature.';
+var SPARE_SHORT = 'Head-Unit: no AltDisp.';
+var SPARE_LEN = SPARE_LOG.length + 1, URL_AT = SPARE_SHORT.length + 1;
+var SPARE_STOCK = Buffer.from(SPARE_LOG + '\0', 'latin1');
+var SPARE_PATCHED = Buffer.alloc(SPARE_LEN);
+SPARE_PATCHED.write(SPARE_SHORT + '\0' + MAP_URL + '\0', 'latin1');
+if (URL_AT + MAP_URL.length + 1 > SPARE_LEN) throw new Error('map URL longer than its spare string');
+/* The alternate-display gate: a small function returning `variant <= 1`
+ * (IC_HIGH or IC_MID): cmp esi|edi,1 ; setbe al. */
+var GATE = [[0x83, 0xfe, 0x01, 0x0f, 0x96, 0xc0], [0x83, 0xff, 0x01, 0x0f, 0x96, 0xc0]];
+/* A global std::string built in a static initializer: lea rsi,[rip+S] ;
+ * lea rdi,[rip+G] ; call. */
+var STRING_INIT = [0x48, 0x8d, 0x35].concat(any(4)).concat([0x48, 0x8d, 0x3d]).concat(any(4)).concat([0xe8]);
+
+/* The rip-relative target address of the lea whose 4-byte displacement is
+ * at `pos` and whose next instruction is at `next`. */
+function leaVa(im, pos, next) { var va = im.va(next); return va === null ? null : (va + im.buf.readInt32LE(pos)) >>> 0; }
+
+/* The spare string: the stock log string or its patched form, as its own
+ * string (a NUL before it), found once. { off } or { err }. */
+function spareString(buf) {
+    var found = [];
+    [SPARE_STOCK, SPARE_PATCHED].forEach(function (want) {
+        for (var i = buf.indexOf(want); i >= 0; i = buf.indexOf(want, i + 1)) if (i > 0 && buf[i - 1] === 0) found.push(i);
+    });
+    if (found.length === 1) return { off: found[0] };
+    return { err: 'map URL: log string ' + (found.length ? 'found ' + found.length + ' times' : 'not found') };
+}
+
+/* The instructions of [start, end), decoded in a row, or null when one is
+ * not decoded. */
+function linear(buf, start, end) {
+    var out = [];
+    for (var p = start; p < end;) { var i = X86.decode(buf, p, end); if (!i) return null; out.push({ at: p, i: i }); p += i.len; }
+    return out;
+}
+function isNop(buf, p) {
+    var q = p;
+    while (buf[q] === 0x66 || buf[q] === 0x2e) q++;
+    return buf[q] === 0x90 || (buf[q] === 0x0f && buf[q + 1] === 0x1f);
+}
+
+/* The start of the code a call's bool result skips to when false: from the
+ * call, its result followed through `mov r32,r32` copies and calls that
+ * keep the register (callee-saved), straight to `test r8,r8 ; je`. */
+function falseBranch(buf, ins, k) {
+    var held = [0], CALLER_SAVED = [0, 1, 2, 6, 7, 8, 9, 10, 11];
+    for (var j = k + 1; j < ins.length && ins[j].at < ins[k].at + 0x40; j++) {
+        var x = ins[j], p = x.at, rex = (buf[p] & 0xf0) === 0x40 ? buf[p++] : 0, m = buf[p + 1];
+        if (buf[p] === 0x84 && (m >> 6) === 3 && ((m >> 3) & 7 | (rex & 4) << 1) === ((m & 7) | (rex & 1) << 3) && held.indexOf((m & 7) | (rex & 1) << 3) >= 0) {
+            var je = ins[j + 1];
+            return je && je.i.kind === 'jcc' && (buf[je.at] === 0x74 || (buf[je.at] === 0x0f && buf[je.at + 1] === 0x84)) ? { je: je.at, to: je.i.to } : null;
+        }
+        if (buf[p] === 0x89 && (m >> 6) === 3 && held.indexOf((m >> 3) & 7 | (rex & 4) << 1) >= 0) { held.push((m & 7) | (rex & 1) << 3); continue; }
+        if (x.i.kind === 'call' || x.i.kind === 'icall') { held = held.filter(function (r) { return CALLER_SAVED.indexOf(r) < 0; }); continue; }
+        if (x.i.kind === 'jcc' && x.i.to > x.at && x.i.to < x.at + 0x20) continue;   /* a short skip forward, e.g. over a release */
+        if (x.i.kind !== 'op') return null;
+        held = held.filter(function (r) { return x.i.w.indexOf(r) < 0; });
+        if (!held.length) return null;
+    }
+    return null;
+}
+
+/* The spare string's one reader, the lea at `at`: a log block reached only
+ * when the alternate-display gate says no, which the variant edit keeps
+ * from running. Its function decodes in a row; one call there to the gate
+ * (a small function doing `variant <= 1`) is followed by `test ; je` to the
+ * block; the block runs straight (no branch) to the lea; no other branch in
+ * the function, and no rel32 branch anywhere, lands in it; and the code
+ * before it does not fall into it. Why not, or null. */
+function logPathWhyNot(im, at) {
+    var buf = im.buf, fn = im.func(at);
+    if (!fn) return 'log string read outside the function table';
+    var ins = linear(buf, fn.off, fn.end);
+    if (!ins) return 'log function not decoded';
+    var gates = {}, blocks = [];
+    ins.forEach(function (x, k) {
+        if (x.i.kind !== 'call') return;
+        if (gates[x.i.to] === undefined) {
+            var g = im.func(x.i.to);
+            gates[x.i.to] = !!g && g.off === x.i.to && g.end - g.off <= 0x40 && GATE.some(function (pat) { return scan(buf, g.off, g.end, pat).length > 0; });
+        }
+        var fb = gates[x.i.to] && falseBranch(buf, ins, k);
+        if (fb && fb.to <= at && at - fb.to < 0x40) blocks.push(fb);
+    });
+    if (blocks.length !== 1) return 'log ' + (blocks.length ? 'reached from ' + blocks.length + ' gate checks' : 'not on the alternate-display gate\'s false branch');
+    var b = blocks[0], k0 = -1;
+    for (var k = 0; k < ins.length; k++) if (ins[k].at === b.to) { k0 = k; break; }
+    if (k0 < 0) return 'log block not at an instruction';
+    for (k = k0; k < ins.length && ins[k].at < at; k++) if (ins[k].i.kind !== 'op' && ins[k].i.kind !== 'call') return 'log block branches before the log';
+    if (k >= ins.length || ins[k].at !== at) return 'log string load not at an instruction';
+    for (k = k0 - 1; k >= 0 && isNop(buf, ins[k].at); k--);
+    if (k >= 0 && ins[k].i.kind !== 'jmp' && ins[k].i.kind !== 'exit') return 'log block entered by falling through';
+    if (ins.some(function (x) { return (x.i.kind === 'jmp' || x.i.kind === 'jcc') && x.at !== b.je && x.i.to >= b.to && x.i.to <= at; }))
+        return 'log block entered by another branch';
+    for (var p = im.exec.off; p + 5 <= im.exec.end; p++) {
+        var t = buf[p] === 0xe9 ? p + 5 + buf.readInt32LE(p + 1)
+            : buf[p] === 0x0f && buf[p + 1] >= 0x80 && buf[p + 1] <= 0x8f && p + 6 <= im.exec.end ? p + 6 + buf.readInt32LE(p + 2) : -1;
+        if (t >= b.to && t <= at && p !== b.je) return 'log block entered from elsewhere';
+    }
+    return null;
+}
+
+/* The STRING_INIT matches: { va of G: [{ at, ctor (the call's target),
+ * src (S's offset or null), reg (the call `lea rsi,[rip+G] ; call` makes
+ * within 0x20 bytes after it, or null) }] }. */
+function stringInits(im) {
+    var out = {}, buf = im.buf;
+    scan(buf, im.exec.off, im.exec.end, STRING_INIT).forEach(function (m) {
+        var g = leaVa(im, m + 10, m + 14), src = leaVa(im, m + 3, m + 7), reg = null;
+        if (g === null) return;
+        scan(buf, m + 19, Math.min(m + 19 + 0x20, im.exec.end), [0x48, 0x8d, 0x35]).some(function (q) {
+            if (leaVa(im, q + 3, q + 7) !== g) return false;
+            var c = im.calls(q + 7, Math.min(q + 7 + 0x10, im.exec.end))[0];
+            reg = c ? c.to : null;
+            return true;
+        });
+        (out[g] = out[g] || []).push({ at: m, ctor: im.rel(m + 15, m + 19), src: src === null ? null : im.off(src), reg: reg });
+    });
+    return out;
+}
+
+/* Whether some global other than `g` is built by `ctor` from a printable C
+ * string and registered through `reg`: ctor then builds std::strings from
+ * C strings, and reg registers static destructors. */
+function builtLikeAString(im, inits, g, ctor, reg) {
+    return Object.keys(inits).some(function (k) {
+        return Number(k) !== g && inits[k].some(function (e) {
+            if (e.ctor !== ctor || e.reg !== reg || e.src === null) return false;
+            var t = stringAt(im.buf, e.src);
+            return t.length >= 2 && /^[\x20-\x7e]+$/.test(t);
+        });
+    });
+}
+
+/* Both sites (sp: the spare string as spareString found it; r: leaRefs of
+ * its every byte; rela: the RELA addends). The initial URL's site: among the
+ * globals the cluster display's builder (the one function constructing
+ * ICSafeAreaProvider and reading its geometry, Edit 4's) loads by address
+ * (a rip-relative lea), the one a STRING_INIT builds, built once, from a
+ * NUL byte ("", stock) or the URL in the spare string (patched), registered
+ * right after (lea rsi,[rip+G] ; call), by a constructor and through a
+ * registration call that also build and register another global from a
+ * printable C string; the site is that build's `lea rsi`. The spare
+ * string's site: the log string (or its patched form) found once, its start
+ * loaded by one lea, which logPathWhyNot clears, and nothing else loading
+ * inside it but, at URL_AT, the initial URL's lea; no RELA addend points
+ * into it. */
+function locateMapUrl(im, res, sp, r, rela) {
+    if (!res.ok) return { ok: false, reason: 'map URL: no cluster display builder (' + res.reason + ')' };
+    if (res.readers.length !== 1) return { ok: false, reason: 'map URL: ' + res.readers.length + ' cluster display builders' };
+    if (sp.err) return { ok: false, reason: sp.err };
+    var buf = im.buf;
+    var slot = sp.off, inits = stringInits(im), fn = res.readers[0], globals = [];
+    for (var p = fn.off + 1; p + 6 <= fn.end; p++) {
+        if (buf[p] !== 0x8d || (buf[p - 1] & 0xfb) !== 0x48 || (buf[p + 1] & 0xc7) !== 0x05) continue;
+        var g = leaVa(im, p + 2, p + 6);
+        if (g !== null && inits[g] && globals.indexOf(g) < 0) globals.push(g);
+    }
+    if (globals.length !== 1) return { ok: false, reason: 'map URL: the cluster display builder loads ' + globals.length + ' string globals (want 1)' };
+    var sites = inits[globals[0]];
+    if (sites.length !== 1) return { ok: false, reason: 'map URL: initial URL built ' + sites.length + ' times' };
+    var lea = sites[0].at, s = sites[0].src, urlOff = slot + URL_AT;
+    if (s === null || (buf[s] !== 0 && s !== urlOff)) return { ok: false, reason: 'map URL: initial URL built from neither "" nor the URL' };
+    if (sites[0].reg === null) return { ok: false, reason: 'map URL: initial URL global not registered for destruction' };
+    if (!builtLikeAString(im, inits, globals[0], sites[0].ctor, sites[0].reg)) return { ok: false, reason: 'map URL: initial URL global not built like the other string globals' };
+    function loads(o) { return r[o] || []; }
+    if (loads(slot).length !== 1) return { ok: false, reason: 'map URL: log string loaded ' + loads(slot).length + ' times (want 1)' };
+    for (var i = 1; i < SPARE_LEN; i++) {
+        var want = i === URL_AT && s === urlOff ? [lea] : [];
+        if (JSON.stringify(loads(slot + i)) !== JSON.stringify(want)) return { ok: false, reason: 'map URL: another string inside the log string' };
+    }
+    var slotVa = im.va(slot);
+    if (rela.some(function (a) { return a >= slotVa && a < slotVa + SPARE_LEN; })) return { ok: false, reason: 'map URL: a data pointer into the log string' };
+    var why = logPathWhyNot(im, r[slot][0]);
+    if (why) return { ok: false, reason: 'map URL: ' + why };
+    return {
+        ok: true, slot: slot, len: SPARE_LEN, lea: lea, url: urlOff, builder: fn.off, log: r[slot][0],
+        slotPatched: buf.slice(slot, slot + SPARE_LEN).equals(SPARE_PATCHED), leaPatched: s === urlOff,
+        slotBytes: SPARE_PATCHED.toString('hex'), leaBytes: '488d35' + hex32(im.va(urlOff) - im.va(lea + 7)),
+    };
 }
 
 /* ---- relocations and version -------------------------------------------- */
@@ -476,9 +673,10 @@ function locateRes(im, str, refs) {
  * relocations this cannot read (REL, RELR, or a dynamic segment or table
  * outside the file), else
  * those of `regions` ([edit, off, len]) that a relocation's 8 bytes (RELA or
- * PLT) overlap. { all: why or null, edits } */
+ * PLT) overlap; and the addends of those relocations, the addresses they
+ * store. { all: why or null, edits, addends } */
 function relocated(im, regions) {
-    var out = { all: null, edits: [] };
+    var out = { all: null, edits: [], addends: [] };
     if (im.dynBad) { out.all = 'relocations not readable'; return out; }
     if (!im.dyn) return out;
     var buf = im.buf, d = {}, rel = [];
@@ -493,7 +691,11 @@ function relocated(im, regions) {
         if (d[t[0]] === undefined) return;
         var at = d[t[0]] === null ? null : im.off(d[t[0]]), n = d[t[1]] || 0;
         if (at === null || at + n > buf.length) { out.all = 'relocations not readable'; return; }
-        for (var r = at; r + 24 <= at + n; r += 24) { var v = u64(buf, r); if (v !== null) rel.push(v); }
+        for (var r = at; r + 24 <= at + n; r += 24) {
+            var v = u64(buf, r), a = u64(buf, r + 16);
+            if (v !== null) rel.push(v);
+            if (a !== null) out.addends.push(a);
+        }
     });
     if (out.all) return out;
     regions.forEach(function (g) {
@@ -511,19 +713,22 @@ function version(buf, pkg) {
     return seen.length === 1 ? seen[0] : null;
 }
 
-/* All four sites: { elf: true|false, reason (not an ELF / why), buildId,
- * version, variant, sink, selfstart, res }, each edit { ok, reason } plus its
- * offsets and stock/patched values. ok is true when every edit was found. */
+/* All five sites: { elf: true|false, reason (not an ELF / why), buildId,
+ * version, variant, sink, selfstart, res, mapurl }, each edit { ok, reason }
+ * plus its offsets and stock/patched values. ok is true when the first four
+ * were found; the map URL edit is applied where it is found, and its reason
+ * says why not. */
 function locate(buf) {
     var elf = parseElf(buf);
     var none = { ok: false, reason: 'not located' };
-    if (!elf.load) return { ok: false, elf: false, reason: elf.reason, buildId: null, version: null, variant: none, sink: none, selfstart: none, res: none };
-    var im = new Image(buf, elf), str = {}, offs = [], sink = locateSink(buf);
+    if (!elf.load) return { ok: false, elf: false, reason: elf.reason, buildId: null, version: null, variant: none, sink: none, selfstart: none, res: none, mapurl: none };
+    var im = new Image(buf, elf), str = {}, offs = [], sink = locateSink(buf), spare = spareString(buf);
     Object.keys(NAMES).forEach(function (k) {
         str[k] = namedString(buf, NAMES[k][0], NAMES[k][1], NAMES[k][2]);
         if (!str[k].err) offs.push(str[k].off);
     });
     if (sink.ok) for (var i = 0; i < sink.len; i++) offs.push(sink.offset + i);
+    if (!spare.err) for (i = 0; i < SPARE_LEN; i++) offs.push(spare.off + i);
     var refs = leaRefs(im, offs);
     var out = { elf: true, buildId: buildId(buf, elf.notes), version: version(buf), variant: locateVariant(im, str, refs), sink: sinkRefs(sink, refs),
                 selfstart: locateSelfstart(im, str, refs), res: locateRes(im, str, refs) };
@@ -532,11 +737,18 @@ function locate(buf) {
     if (out.sink.ok) regions.push(['sink', out.sink.offset, out.sink.len]);
     if (out.selfstart.ok) regions.push(['selfstart', out.selfstart.offset, 5]);
     if (out.res.ok) [out.res.mm, out.res.px, out.res.safe1, out.res.safe2].forEach(function (o) { regions.push(['res', o, 8]); });
-    var hit = relocated(im, regions), label = { variant: 'variant', sink: 'sink', selfstart: 'self-start', res: 'resolution' };
-    Object.keys(label).forEach(function (e) {
-        if (out[e].ok && (hit.all || hit.edits.indexOf(e) >= 0))
-            out[e] = { ok: false, reason: label[e] + ': ' + (hit.all || 'a dynamic relocation over the edit') };
-    });
+    var label = { variant: 'variant', sink: 'sink', selfstart: 'self-start', res: 'resolution', mapurl: 'map URL' };
+    function refuse(hit) {
+        Object.keys(label).forEach(function (e) {
+            if (out[e] && out[e].ok && (hit.all || hit.edits.indexOf(e) >= 0))
+                out[e] = { ok: false, reason: label[e] + ': ' + (hit.all || 'a dynamic relocation over the edit') };
+        });
+    }
+    var hit = relocated(im, regions);
+    refuse(hit);
+    /* The map URL edit builds on the resolution edit's cluster display builder. */
+    out.mapurl = locateMapUrl(im, out.res, spare, refs, hit.addends);
+    if (out.mapurl.ok) refuse(relocated(im, [['mapurl', out.mapurl.slot, out.mapurl.len], ['mapurl', out.mapurl.lea, 7]]));
     var failed = [out.variant, out.sink, out.selfstart, out.res].filter(function (e) { return !e.ok; });
     out.ok = failed.length === 0;
     if (failed.length) out.reason = failed.map(function (e) { return e.reason; }).join('; ');
@@ -556,7 +768,7 @@ function stockOriginal(proven, cur) {
 }
 
 module.exports = {
-    locate: locate, buildId: elfBuildId, SINK_STOCK: SINK_STOCK, stockOriginal: stockOriginal,
+    locate: locate, buildId: elfBuildId, SINK_STOCK: SINK_STOCK, MAP_URL: MAP_URL, stockOriginal: stockOriginal,
     /* the ELF reading aapd_locate.js shares */
     elf: { parseElf: parseElf, Image: Image, noteBuildId: buildId, scan: scan, namedString: namedString, leaRefs: leaRefs,
            funcOfString: funcOfString, relocated: relocated, hex32: hex32, version: version,

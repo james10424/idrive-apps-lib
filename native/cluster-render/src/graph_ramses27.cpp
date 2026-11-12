@@ -31,6 +31,7 @@
 #include "ramses-client-api/SplineStepFloat.h"
 #include "ramses-client-api/SplineStepVector3f.h"
 #include "ramses-client-api/SplineStepVector4f.h"
+#include "ramses-client-api/Texture2D.h"
 #include "ramses-client-api/Texture2DBuffer.h"
 #include "ramses-client-api/TextureSampler.h"
 #include "ramses-client-api/UniformInput.h"
@@ -217,10 +218,36 @@ public:
         return next_++;
     }
 
+    /* ETC2RGBA: a scene resource, sent with the next flush. */
+    int immutable_texture(TexFormat f, uint32_t w, uint32_t h, Sampling s, Wrap wrap, const uint8_t *data,
+                          size_t n) override
+    {
+        if (f != TexFormat::ETC2RGBA)
+            return 0;
+        const ramses::ETextureAddressMode mode =
+            wrap == Wrap::Repeat ? ramses::ETextureAddressMode_Repeat : ramses::ETextureAddressMode_Clamp;
+        const ramses::ETextureSamplingMethod method =
+            s == Sampling::Nearest ? ramses::ETextureSamplingMethod_Nearest : ramses::ETextureSamplingMethod_Linear;
+        const ramses::MipLevelData mip((uint32_t)n, data);
+        ramses::Texture2D *tex = scene_->createTexture2D(ramses::ETextureFormat::ETC2RGBA, w, h, 1, &mip);
+        ramses::TextureSampler *smp = tex ? scene_->createTextureSampler(mode, mode, method, method, *tex) : nullptr;
+        if (!smp) {
+            log_error("ramses: %ux%u ETC2RGBA texture of %zu bytes refused by %s", w, h, n,
+                      tex ? "createTextureSampler" : "createTexture2D");
+            if (tex)
+                scene_->destroy(*tex);
+            return 0;
+        }
+        Buffer b{nullptr, smp};
+        b.tex = tex;
+        buffers_[next_] = b;
+        return next_++;
+    }
+
     bool write(int buf, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t *px) override
     {
         auto it = buffers_.find(buf);
-        if (it == buffers_.end())
+        if (it == buffers_.end() || !it->second.buffer)
             return false;
         const ramses::status_t s = it->second.buffer->updateData(0, x, y, w, h, px);
         if (!ok(s) && !write_failing_)
@@ -396,7 +423,10 @@ public:
         if (b == buffers_.end())
             return;
         scene_->destroy(*b->second.sampler);
-        scene_->destroy(*b->second.buffer);
+        if (b->second.buffer)
+            scene_->destroy(*b->second.buffer);
+        if (b->second.tex)
+            scene_->destroy(*b->second.tex);
         buffers_.erase(b);
     }
 
@@ -650,8 +680,9 @@ public:
 
 private:
     struct Buffer {
-        ramses::Texture2DBuffer *buffer;
+        ramses::Texture2DBuffer *buffer;   /* null for an immutable texture */
         ramses::TextureSampler *sampler;
+        ramses::Texture2D *tex = nullptr;
     };
     struct Quad {
         ramses::MeshNode *mesh = nullptr;

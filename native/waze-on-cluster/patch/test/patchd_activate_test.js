@@ -637,21 +637,34 @@ async function main() {
     ok('coding 7: the next install leaves the trial as it is', r.code === 0 && !r.result.reboot &&
         JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: false, trial: true }), JSON.stringify([r.result, rec()]));
     /* A car an earlier release patched and recorded proven: an update keeps
-     * it proven, also when it brings the patch up to date. */
+     * it proven, also when it brings the patch up to date, unless the update
+     * adds the map URL edit: a healthy run without it does not prove it, so
+     * that patch is on trial. */
+    var current = fs.readFileSync(TGT);
     record.write(TGT, { patched: true, proven: true });
     r = hook('activate');
     ok('migration: a patch recorded proven by an earlier release stays proven', r.code === 0 && !r.result.reboot &&
         JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: true }), JSON.stringify([r.result, rec()]));
-    var olderPatch = Buffer.from(SRCBUF);
-    olderPatch.writeUInt32LE(0xfff7f2bc >>> 0, SLOT);
-    Buffer.from('e89f000000', 'hex').copy(olderPatch, 0x18176c);
-    fs.writeFileSync(TGT + '.older', olderPatch, { mode: 0o755 });
-    fs.renameSync(TGT + '.older', TGT);
-    record.write(TGT, { patched: true, proven: true });
-    headUnitStart();
-    r = hook('activate');
-    ok('migration: an older patch recorded proven, brought up to date, stays proven', r.code === 0 && marker() && marker().action === 'apply' &&
-        /resolution -> 1088x480/.test(r.out) && JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: true }), JSON.stringify([r.result, rec()]));
+    function olderRelease(edits) {
+        var b = Buffer.from(SRCBUF);
+        b.writeUInt32LE(0xfff7f2bc >>> 0, SLOT);
+        Buffer.from('e89f000000', 'hex').copy(b, 0x18176c);
+        edits.forEach(function (e) { current.copy(b, e[0], e[0], e[0] + e[1]); });
+        fs.writeFileSync(TGT + '.older', b, { mode: 0o755 });
+        fs.renameSync(TGT + '.older', TGT);
+        record.write(TGT, { patched: true, proven: true });
+        headUnitStart();
+        return hook('activate');
+    }
+    var RES = [[0x20ca32, 8], [0x20ca54, 8], [0x20ca66, 8], [0x20ca74, 8]], MAPURL = [[0x257838, 55], [0x7b533, 7]];
+    r = olderRelease(MAPURL);
+    ok('migration: an older patch with the map URL edit recorded proven, brought up to date, stays proven', r.code === 0 && marker() && marker().action === 'apply' &&
+        /resolution -> 1088x480/.test(r.out) && !/map URL ->/.test(r.out) && disk() === sha(current) &&
+        JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: true }), JSON.stringify([r.result, rec()]));
+    r = olderRelease(RES);
+    ok('migration: a patch without the map URL edit recorded proven, brought up to date, is on trial', r.code === 0 && marker() && marker().action === 'apply' &&
+        /map URL -> maps:\/car\/instrumentcluster\/map/.test(r.out) && !/resolution ->/.test(r.out) && disk() === sha(current) &&
+        JSON.stringify(rec()) === JSON.stringify({ patched: true, proven: false, trial: true }), JSON.stringify([r.result, rec()]));
 
     var CODINGS = [['coding 9', 9, undefined, 'not supported on this car (KI_KOMBI_VARIANT 9)'],
         ['invalid coding flags', 7, 0x0b, 'cluster coding unreadable'], ['no coding', null, undefined, 'cluster coding unreadable']];

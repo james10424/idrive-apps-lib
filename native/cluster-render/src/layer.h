@@ -30,6 +30,22 @@
 
 namespace crs {
 
+class Coverage;
+
+/* How a layer is drawn in the next flush, for what it covers (occlusion.h):
+ * drawn or not, its rect, turned or scaled by its turn, its opacity and its
+ * target's fade, and whether an animation of it plays. */
+struct Shown {
+    bool drawn = false;
+    Rect rect;
+    bool turned = false;
+    float opacity = 1, fade = 1;
+    bool animating = false;
+    /* The budget allows a write this tick: an image's pixels waiting to be
+     * written may reach the scene in it. */
+    bool budget_ready = true;
+};
+
 /* What a client sets on a layer, at any time. */
 struct LayerParams {
     Klass klass = Klass::Content;
@@ -106,6 +122,17 @@ public:
     virtual const char *kind() const = 0;
 
     LayerParams params;
+    /* What the scene shows of the layer: params, or while a change of them
+     * waits (the compositor's defer_uncover) what its last flush showed. */
+    const LayerParams &drawn_params() const { return scene_held_ ? scene_params_ : params; }
+    /* p: the scene keeps showing p (null: params again); the caller places
+     * and arranges the layer then. */
+    void hold_scene(const LayerParams *p)
+    {
+        scene_held_ = p != nullptr;
+        if (p)
+            scene_params_ = *p;
+    }
 
     /* Plays a on part (0: the layer's quad, or a mesh layer's camera) by
      * the renderer, replacing anim of the same number; kept and started
@@ -167,6 +194,27 @@ public:
     /* Pixel bytes its buffers hold in the scene; 0 when not attached. */
     virtual size_t buffer_bytes() const { return 0; }
 
+    /* Occlusion (occlusion.h), each tick of a requested target before
+     * stage(), its layers top first, each drawn as s: occluded() gets what
+     * the layers drawn above this one cover opaquely (a video hides its
+     * tiles under it), and occlude() adds what this one covers. */
+    virtual void occluded(const Coverage &, const Shown &) {}
+    virtual void occlude(Coverage *, const Shown &) {}
+    /* Tiles it left unwritten while hidden are no longer hidden: the target
+     * flushes only with its write (video_layer.h). */
+    virtual bool uncovering() const { return false; }
+    /* Its pixels have reached the display in this scene: a write of them
+     * went (layers with nothing to write: always). */
+    virtual bool on_display() const { return true; }
+
+    /* Animations the client plays, started or not; started ones. */
+    bool animating() const { return !played_.empty(); }
+    bool animations_started() const;
+    /* Starts the animations play() kept waiting (it does while the layer
+     * covers a video's tiles: the compositor starts them in the flush that
+     * writes what they uncover); whether any. */
+    bool start_pending();
+
 protected:
     /* After set_fade() changed the fade. */
     virtual void faded() {}
@@ -193,6 +241,10 @@ protected:
     bool drawn_ = false;
     int32_t order_ = 0;
     float fade_ = 1.0f;
+    /* New animations wait for start_pending(). */
+    bool defer_starts_ = false;
+    bool scene_held_ = false;
+    LayerParams scene_params_;
 
     /* Keeps a and starts it when attached; no limit (the service's own). */
     bool play(uint32_t anim, uint32_t part, const Animation &a, std::string *err);
@@ -202,6 +254,7 @@ private:
         uint32_t part = 0;
         Animation a;
         int handle = 0;   /* in the current scene */
+        bool pending = false;   /* waits for start_pending() */
     };
     std::map<uint32_t, Played> played_;
 };
@@ -228,6 +281,7 @@ public:
     bool update(const std::vector<crk::PixelRect> &rects, const uint8_t *data, size_t n, std::string *err);
 
     bool ready(int64_t) const override { return have_; }
+    bool on_display() const override { return written_; }
     bool attach(Graph *g, int64_t now_ms, std::string *err) override;
     void detach(bool drop) override;
     void arrange(bool drawn, int32_t order) override;
@@ -241,6 +295,11 @@ public:
     WriteStats write_stats() const override;
     size_t buffer_bytes() const override { return g_ ? (size_t)w_ * h_ * 4 : 0; }
     bool fades() const override { return true; }
+    void occlude(Coverage *cov, const Shown &s) override;
+
+    /* Opaque blocks: kOpaqueBlock x kOpaqueBlock pixels each, tracked once
+     * the image is asked what it covers. */
+    static const uint32_t kOpaqueBlock = 8;
 
 protected:
     void faded() override;
@@ -263,9 +322,24 @@ private:
      * image is exclusive or was when the write failed (hold_). */
     bool holding() const { return parked_ && (hold_ || params.exclusive); }
     bool whole_ = true, have_ = false, parked_ = false, hold_ = false;
+    bool written_ = false;   /* a write went since attach() */
     int buf_ = 0, quad_ = 0;
     std::vector<uint8_t> scratch_;
     size_t staged_ = 0;   /* bytes setData took this tick */
+    /* Per opaque block, once tracked (opq_on_): whether every pixel of px_
+     * has alpha 255 (opq_px_; 2: not looked at since it changed), and
+     * whether every pixel the buffer holds there has, as of the last write
+     * that went (opq_buf_; known only while opq_buf_known_). */
+    bool opq_on_ = false, opq_buf_known_ = false;
+    std::vector<uint8_t> opq_px_, opq_buf_;
+    uint32_t opq_cols_ = 0, opq_rows_ = 0;
+    /* Whether every block, or none, is opaque in the buffer, and in the
+     * buffer and the pixels waiting: kept until either changes (opq_ver_). */
+    uint64_t opq_ver_ = 1, opq_sum_ver_ = 0;
+    bool opq_all_buf_ = false, opq_none_buf_ = true, opq_all_both_ = false, opq_none_both_ = true;
+    void opq_changed(const crk::PixelRect &r);
+    void opq_resolve();
+    void opq_summary();
     uint64_t writes_ = 0, bytes_ = 0, failed_ = 0, held_budget_ = 0;
 };
 

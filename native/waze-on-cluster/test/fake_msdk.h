@@ -56,6 +56,10 @@ extern int delay;
 extern uint8_t swallow;
 extern bool timestamps;
 
+/* The newest `refs` decoded pictures stay locked as references (0: none),
+ * so the decoder hands other surfaces as work surfaces. */
+extern int refs;
+
 /* An access unit of the fake stream: the SPS and PPS when sps is a size
  * ("1088x480"), then an IDR slice (idr) or a P slice whose picture is
  * content (1-127). */

@@ -6,9 +6,11 @@
  * Every layer is drawn at once, bottom to top by class (ambient, content,
  * overlay, alert), then by the client's z within the class, then oldest
  * first, so a newer layer of the same class and z is on top. A layer marked
- * exclusive hides every layer below it while it is drawn; they are
- * suspended, not removed, and come back in the same flush it goes. A
- * change of the stack is a change of the scene: no display traffic.
+ * exclusive hides every layer below it while it is drawn and its pixels are
+ * on the display (shown); they are suspended, not removed, and come back in
+ * the same flush it goes. Until its first write has gone it is drawn over
+ * them, and they stay shown. A change of the stack is a change of the
+ * scene: no display traffic.
  *
  * The target is wanted while any layer is visible and ready (it has
  * content), or visible and prewarm (it asks for the slot before its first
@@ -35,12 +37,13 @@ struct StackItem {
     uint64_t seq = 0;   /* creation order */
     bool visible = true, ready = false, exclusive = false, prewarm = false, contend = false, guide_hold = true;
     bool yield = true;
+    bool shown = true;   /* its pixels are on the display (Layer::on_display) */
 };
 
 struct Arrangement {
     std::vector<uint32_t> order;       /* every layer, bottom to top */
-    std::vector<uint32_t> drawn;       /* visible, ready and not below a drawn exclusive layer */
-    std::vector<uint32_t> suspended;   /* visible and ready, but below a drawn exclusive layer */
+    std::vector<uint32_t> drawn;       /* visible, ready and not below a drawn, shown exclusive layer */
+    std::vector<uint32_t> suspended;   /* visible and ready, but below a drawn, shown exclusive layer */
     bool wanted = false, contend = false, guide_hold = true, yield = true;
 };
 

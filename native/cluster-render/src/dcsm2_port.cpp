@@ -207,12 +207,23 @@ void Dcsm2Port::on_reply(uint16_t method, bool ok, uint32_t status, const std::s
                            : method == dcsm::kReqMapContent ? take(&maps_) : 0;
     const std::string why = ok ? status_text : "no valid reply";
     log_info("dcsm: reply to request 0x%04x (content 0x%llx): %s", method, (unsigned long long)scene, why.c_str());
-    if (ok && status == dcsm::E_DCSM_OK)
-        return;   /* the status event follows */
     auto it = contents_.find(scene);
+    if (ok && status == dcsm::E_DCSM_OK) {
+        if (method == dcsm::kReqMapContent && it != contents_.end() && it->second.phase == Phase::Mapping &&
+            it->second.accepted_ms < 0)
+            it->second.accepted_ms = now_ms;
+        return;   /* the status event follows */
+    }
     if (it == contents_.end())
         return;   /* released since */
     Content &c = it->second;
+    if (method == dcsm::kReqMapContent && c.phase == Phase::Mapping && c.accepted_ms >= 0) {
+        /* A repeat refused: the first map stands, as accepted. */
+        c.map_again = false;
+        log_info("dcsm: content 0x%llx: the repeated map is not taken (%s); waiting on the first one",
+                 (unsigned long long)scene, why.c_str());
+        return;
+    }
     if ((method == dcsm::kReqFetchContent && c.phase == Phase::Fetching) ||
         (method == dcsm::kReqMapContent && c.phase == Phase::Mapping))
         refuse(scene, c, classify(ok, status), (method == dcsm::kReqFetchContent ? "fetch " : "map ") + why, now_ms);
@@ -248,6 +259,7 @@ void Dcsm2Port::on_fetch_status(uint64_t scene, uint32_t status, int64_t now_ms)
         c.phase = Phase::Mapping;
         c.map_asked = true;
         c.fetched = true;
+        c.map_ms = now_ms;
         if (up_)
             maps_.push_back(scene);
         wire_->map(scene, c.spec.content_class, c.spec.slot);
@@ -352,6 +364,32 @@ void Dcsm2Port::on_subscription(uint16_t event, uint16_t code, int64_t)
         log_info("dcsm: subscription to %s: accepted", event_name(event).c_str());
     else
         log_error("dcsm: subscription to %s: %s", event_name(event).c_str(), answer_text(code).c_str());
+}
+
+/* A display that is starting accepts a fetch and a map and then shows
+ * nothing, with no map status and no refusal (seen on the car: the map
+ * accepted, nothing for 5 s, and the same request made after a release
+ * shown within 0.3 s). The map is asked again while that lasts: no
+ * release, no unfetch, and the scene is not published again, so nothing
+ * is uploaded twice. Not while the last table reports the slot disabled. */
+bool Dcsm2Port::remind(const TargetSpec &t, int64_t now_ms)
+{
+    if (accepted_ms(t) < 0)
+        return false;
+    Content &c = contents_.find(t.scene_id)->second;
+    if (!up_ || !c.map_again || now_ms - c.map_ms < kMapAgainMs)
+        return true;
+    for (const SlotInfo &s : table_)
+        if (s.slot == c.spec.slot && s.status == 0)
+            return true;
+    c.map_ms = now_ms;
+    if (c.map_repeats++ == 0)
+        log_info("dcsm: content 0x%llx (target %s, slot 0x%llx): the map was accepted and nothing is shown; asking "
+                 "again every %lld ms",
+                 (unsigned long long)t.scene_id, t.name.c_str(), (unsigned long long)c.spec.slot, (long long)kMapAgainMs);
+    maps_.push_back(t.scene_id);
+    wire_->map(t.scene_id, c.spec.content_class, c.spec.slot);
+    return true;
 }
 
 /* What arrived since the request, and the last slot table, so a log tells

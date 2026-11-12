@@ -60,7 +60,13 @@
  * listed slot stays where it is. A loss
  * with the slot locked does not climb the ladder, and after a lock a
  * take-over target is asked for once the slot is not locked, with stock
- * content shown there or not. The panel on its own scene id: shown with
+ * content shown there or not. Accepted, not mapped, for any target, with
+ * or without take-overs: a map the display accepted with no map status for
+ * 3 s, or a parked, shown or lingering scene whose own row the slot table
+ * reports unmapped (none mapped) for 3 s, is released and asked for again
+ * on the ladder, or at once when the slot comes back from a lock, never
+ * while it is locked; a row mapped again within the 3 s, or a parked
+ * scene the stock map stays ahead of, is left alone. The panel on its own scene id: shown with
  * the map and the HUD at once, each released and asked for again in its
  * warm scene alone; falling back to the HUD's id when the display refuses
  * the scene as unknown, and when the guard disables its own id (two
@@ -73,6 +79,7 @@
  * slot or a yield slot, and the turn box); to nothing while a layer has
  * yield false, and asked for again at once when one sets it while waiting. */
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -115,6 +122,13 @@ struct FakePort : Port {
     bool confirm = true;
     bool available() const override { return up; }
     bool confirmed(const TargetSpec &) const override { return confirm; }
+    /* By target name: when the display accepted its map (Port::accepted_ms). */
+    std::map<std::string, int64_t> accepted;
+    int64_t accepted_ms(const TargetSpec &t) const override
+    {
+        auto a = accepted.find(t.name);
+        return a == accepted.end() ? -1 : a->second;
+    }
     void request(const TargetSpec &t) override { calls.push_back("request " + t.name); }
     void release(const TargetSpec &t) override { calls.push_back("release " + t.name); }
     void take_over(const TargetSpec &t, uint64_t content) override
@@ -944,6 +958,115 @@ static void take_overs_restart_when_shown()
     ok("and the next 1.5 s later", quiet && joined().find("take over map 0x1000300") != std::string::npos);
 }
 
+/* Car log 2026-11-12 08:04: the map parked behind the stock map after a
+ * lock, then a second lock unmaps ours (3 -> 0) with no map status; only
+ * the slot table tells. Released 3 s later and asked for again once the
+ * slot is free, not left parked while the take-overs unmap the stock map
+ * every 30 s. */
+static void not_mapped_map_after_lock()
+{
+    Rig r;
+    r.m.want(0, true, true);
+    r.m.tick(r.now);
+    r.rows(kMapSlot, 2, {{kHmiMap, 1}, {kMapScene, 3}});
+    r.m.on_parked(kMapScene, r.now);
+    r.m.tick(r.now);
+    ok("map: parked behind the stock map, a take-over", joined().find("take over map 0x1000300") != std::string::npos);
+    r.rows(kMapSlot, 1, {{kHmiMap, 0}, {kMapScene, 3}});
+    r.run(150);
+    r.rows(kMapSlot, 2, {{kHmiMap, 1}, {kMapScene, 3}});
+    r.run(1500);
+    joined();
+    r.rows(kMapSlot, 0, {{kHmiMap, 1}, {kMapScene, 3}, {kMapScene, 0}});
+    r.run(3500);
+    ok("map: a lock listing ours parked and unmapped: still mapped, kept", r.state(0) == TargetState::Parked &&
+                                                                           joined().find("release") == std::string::npos);
+    r.rows(kMapSlot, 0, {{kHmiMap, 1}, {kMapScene, 0}});
+    r.run(2990);
+    ok("map: ours unmapped in the locked slot, 2.99 s: kept",
+       r.state(0) == TargetState::Parked && joined().find("release") == std::string::npos);
+    r.run(10);
+    ok("map: 3 s: released, waiting", joined().find("release map") == 0 && r.state(0) == TargetState::Waiting &&
+                                          !r.m.requested(0));
+    r.rows(kMapSlot, 0, {{kHmiMap, 0}, {kMapScene, 0}});
+    r.run(100);
+    const std::string locked = joined();
+    ok("map: nothing asked for or taken over while the slot is locked",
+       locked.find("request") == std::string::npos && locked.find("take over") == std::string::npos);
+    r.rows(kMapSlot, 1, {{kHmiMap, 0}});
+    r.run(10);
+    ok("map: the lock gone: asked for again at once", calls_are("request map") && r.state(0) == TargetState::Acquiring);
+    r.rows(kMapSlot, 2, {{kHmiMap, 1}, {kMapScene, 3}});
+    r.m.on_parked(kMapScene, r.now);
+    r.m.tick(r.now);
+    ok("map: parked again: a take-over at once, the count started over",
+       joined().find("take over map 0x1000300") != std::string::npos);
+    r.run(1490);
+    const bool spaced = joined().find("take over") == std::string::npos;
+    r.run(10);
+    ok("map: and the next 1.5 s later", spaced && joined().find("take over map 0x1000300") != std::string::npos);
+    r.rows(kMapSlot, 2, {{kHmiMap, 3}, {kMapScene, 1}});
+    r.m.on_shown(kMapScene, r.now);
+    ok("map: and shown", r.state(0) == TargetState::Shown);
+
+    Rig k;   /* parked, the stock map staying ahead: the take-overs' business */
+    k.m.want(0, true, true);
+    k.m.tick(k.now);
+    k.rows(kMapSlot, 2, {{kHmiMap, 1}, {kMapScene, 3}});
+    k.m.on_parked(kMapScene, k.now);
+    k.run(20000);
+    const std::string ahead = joined();
+    ok("map: parked 20 s behind the stock map: taken over on its steps, never released",
+       k.state(0) == TargetState::Parked && ahead.find("release") == std::string::npos &&
+           ahead.find("take over map 0x1000300") != std::string::npos);
+}
+
+/* The panel (no take-overs) and the HUD: a shown scene the table reports
+ * unmapped with no map status, and a map the display accepted and never
+ * answered, are released and asked for again on the ladder. */
+static void not_mapped_panel_and_hud()
+{
+    Rig r;
+    r.m.want(1, true, false);
+    r.m.tick(r.now);
+    r.rows(kPanelSlot, 2, {{kPanelScene, 1}});
+    r.m.on_shown(kPanelScene, r.now);
+    joined();
+    r.rows(kPanelSlot, 1, {{kPanelScene, 0}});
+    r.run(1000);
+    r.rows(kPanelSlot, 2, {{kPanelScene, 1}});
+    r.run(5000);
+    ok("panel: its row unmapped 1 s, then mapped again: kept", r.state(1) == TargetState::Shown && calls_are(""));
+    r.rows(kPanelSlot, 1, {{kPanelScene, 0}});
+    r.run(2990);
+    ok("panel: shown, its row unmapped 2.99 s: kept", r.state(1) == TargetState::Shown && calls_are(""));
+    r.run(10);
+    ok("panel: 3 s: released, waiting on the ladder", calls_are("release panel") &&
+                                                          r.state(1) == TargetState::Waiting &&
+                                                          r.m.status(1).retry_ms == r.now + 2000);
+    r.run(2000);
+    ok("panel: asked for again 2 s later", calls_are("request panel") && r.state(1) == TargetState::Acquiring);
+
+    Rig h;
+    h.m.want(2, true, false);
+    h.m.tick(h.now);
+    joined();
+    h.port.accepted["hud"] = h.now;
+    h.run(2990);
+    ok("hud: its map accepted, no map status for 2.99 s: still acquiring",
+       h.state(2) == TargetState::Acquiring && calls_are(""));
+    h.run(10);
+    ok("hud: 3 s: released, waiting", calls_are("release hud") && h.state(2) == TargetState::Waiting);
+    h.port.accepted.clear();
+    h.run(2000);
+    ok("hud: asked for again on the ladder", calls_are("request hud"));
+    h.rows(kHudSlot, 2, {{kPanelScene, 1}});
+    h.m.on_shown(kPanelScene, h.now);
+    ok("hud: and shown", h.state(2) == TargetState::Shown);
+    h.run(10000);
+    ok("hud: shown with its row mapped: nothing more", calls_are("") && h.state(2) == TargetState::Shown);
+}
+
 /* Car log 2026-11-01 13:49: a 6 s lock with the map's 2 s retry due in it.
  * Nothing is asked for while the slot is reported disabled; the map is
  * asked for on the first tick the slot is reported free. */
@@ -1379,15 +1502,36 @@ static void rendering()
     r.m.on_shown(kMapScene, r.now);
     const int64_t shown = r.now;
     r.run(1510);
-    ok("shown again, still not subscribed: released, on the ladder (2 s) this time",
-       calls_are("release map") && r.state(0) == TargetState::Waiting &&
+    ok("shown again, still not subscribed: released and unpublished (a fresh offer next), on the ladder (2 s) this time",
+       calls_are("release map; unpublish map") && r.state(0) == TargetState::Waiting &&
            r.m.status(0).retry_ms == shown + SlotManager::kVerifyMs + 2000);
     r.run(2000);
-    ok("asked for again at the step", calls_are("request map"));
+    ok("asked for again at the step, published again", calls_are("publish map; request map"));
     r.m.on_subscription(kMapScene, true, false, kRenderer, r.now);
     r.run(100);
     r.m.on_shown(kMapScene, r.now);
     ok("subscribed: verified", r.m.status(0).rendering == Rendering::Verified && r.m.published(0));
+
+    /* the renderer never subscribing: every kReconnectAfter-th recovery in a row asks the unit to reconnect */
+    Rig k;
+    int stuck = 0;
+    k.m.on_renderer_stuck = [&stuck](int64_t) { stuck++; };
+    k.m.on_subscription(kMapScene, true, false, kRenderer, k.now);    /* subscription lines are readable */
+    k.m.on_subscription(kMapScene, false, false, kRenderer, k.now);
+    k.m.want(0, true, false);
+    k.m.tick(k.now);
+    k.run(100);
+    k.m.on_subscription(kMapScene, true, false, kRenderer, k.now);   /* the console shows subscriptions: then the renderer goes */
+    k.m.on_renderer_gone(kRenderer, k.now);
+    for (int n = 0; n < SlotManager::kReconnectAfter; n++) {
+        k.m.on_shown(kMapScene, k.now);
+        k.run(1510);
+        for (int w = 0; w < 600 && k.state(0) != TargetState::Acquiring; w++)
+            k.run(100);
+        k.run(100);
+    }
+    ok("not subscribed through kReconnectAfter recoveries: one reconnect asked", stuck == 1);
+    calls.clear();
 
     Rig u;
     u.m.on_subscription(0x01000300, true, false, kRenderer, u.now);   /* no target of ours publishes it */
@@ -1696,6 +1840,35 @@ static void guide_yields()
     o.pass(5000);
     ok("parked behind HMI content off the list: yields, no take-over", calls_are("release guide") &&
                                                                         o.state(GuideRig::kGuide) == TargetState::Idle);
+}
+
+/* The guide hold parked behind the box, then a lock that unmaps it with no
+ * map status: released 3 s later, not a loss, and asked for again once the
+ * slot is free. */
+static void guide_not_mapped()
+{
+    GuideRig h;
+    h.rows(kGuideSlot, 2, {{kBox, 1}});
+    h.show_map();
+    h.pass();
+    h.rows(kGuideSlot, 2, {{kBox, 1}, {kGuideScene, 3}});
+    h.m.on_parked(kGuideScene, h.now);
+    h.pass();
+    ok("guide: parked behind the box: a take-over", joined().find("take over guide 0x1000310") != std::string::npos);
+    h.rows(kGuideSlot, 0, {{kBox, 1}, {kGuideScene, 0}});
+    h.pass(3000);
+    ok("guide: unmapped in its locked slot 3 s: released, waiting",
+       joined().find("release guide") != std::string::npos && h.state(GuideRig::kGuide) == TargetState::Waiting);
+    h.pass(5000);
+    ok("guide: not asked for while the slot is locked", requested_none(joined()));
+    h.rows(kGuideSlot, 2, {{kBox, 1}});
+    h.pass();
+    ok("guide: the slot free: asked for again at once", calls_are("request guide"));
+    h.rows(kGuideSlot, 2, {{kGuideScene, 1}, {kBox, 3}});
+    h.m.on_shown(kGuideScene, h.now);
+    h.pass(5000);
+    ok("guide: shown, not given up", h.state(GuideRig::kGuide) == TargetState::Shown &&
+                                         logged().find("given up") == std::string::npos);
 }
 
 /* A door opened: the KOMBI locks 0x105 and unmaps everything in it, then
@@ -2788,6 +2961,8 @@ int main()
     lock_then_take_overs();
     brief_shows_back_off();
     take_overs_restart_when_shown();
+    not_mapped_map_after_lock();
+    not_mapped_panel_and_hud();
     no_request_while_locked();
     fallback_and_lock();
     wake();
@@ -2804,6 +2979,7 @@ int main()
     guide_never_verified_out();
     guide_live_route();
     guide_yields();
+    guide_not_mapped();
     guide_door_lock();
     guide_take_over_settle();
     guide_gives_up();

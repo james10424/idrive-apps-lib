@@ -2,10 +2,12 @@
  * Copyright (C) 2026 Robert Nisipeanu */
 #include "layer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
 #include "log.h"
+#include "occlusion.h"
 
 namespace crs {
 
@@ -125,7 +127,9 @@ bool Layer::play(uint32_t anim, uint32_t part, const Animation &a, std::string *
     Played p;
     p.part = part;
     p.a = a;
-    if (g_) {
+    if (g_ && defer_starts_) {
+        p.pending = true;   /* the renderer's refusal is logged when it starts */
+    } else if (g_) {
         const int node = animated(part);
         p.handle = node ? g_->animate(node, a) : 0;
         if (!p.handle) {
@@ -142,7 +146,7 @@ bool Layer::stop(uint32_t anim)
     auto it = played_.find(anim);
     if (it == played_.end())
         return false;
-    if (g_ && it->second.handle) {
+    if (g_ && it->second.handle && !it->second.pending) {
         g_->stop(it->second.handle);
         restore(it->second.part, it->second.a);
     }
@@ -150,9 +154,34 @@ bool Layer::stop(uint32_t anim)
     return true;
 }
 
+bool Layer::animations_started() const
+{
+    for (const auto &kv : played_)
+        if (!kv.second.pending)
+            return true;
+    return false;
+}
+
+bool Layer::start_pending()
+{
+    bool any = false;
+    for (auto &kv : played_) {
+        if (!kv.second.pending || !g_)
+            continue;
+        kv.second.pending = false;
+        any = true;
+        const int node = animated(kv.second.part);
+        kv.second.handle = node ? g_->animate(node, kv.second.a) : 0;
+        if (!kv.second.handle)
+            log_warn("layer %u: animation %u refused by the renderer", id_, kv.first);
+    }
+    return any;
+}
+
 void Layer::start_animations()
 {
     for (auto &kv : played_) {
+        kv.second.pending = false;
         const int node = animated(kv.second.part);
         kv.second.handle = node ? g_->animate(node, kv.second.a) : 0;
         if (!kv.second.handle)
@@ -197,6 +226,10 @@ bool ImageLayer::update(const std::vector<crk::PixelRect> &rects, const uint8_t 
         whole_ = true;
         dirty_.clear();
         have_ = true;
+        if (opq_on_) {
+            std::fill(opq_px_.begin(), opq_px_.end(), 2);
+            opq_ver_++;
+        }
         return true;
     }
     size_t need = 0;
@@ -215,6 +248,10 @@ bool ImageLayer::update(const std::vector<crk::PixelRect> &rects, const uint8_t 
         for (uint32_t y = 0; y < r.h; y++)
             std::memcpy(&px_[((size_t)(r.y + y) * w_ + r.x) * 4], data + (size_t)y * r.w * 4, (size_t)r.w * 4);
         data += (size_t)r.w * r.h * 4;
+        if (opq_on_) {
+            opq_changed(r);
+            opq_ver_++;
+        }
         if (!whole_) {
             if (dirty_.size() >= kMaxRects) {
                 whole_ = true;
@@ -231,17 +268,20 @@ bool ImageLayer::update(const std::vector<crk::PixelRect> &rects, const uint8_t 
 bool ImageLayer::attach(Graph *g, int64_t, std::string *err)
 {
     g_ = g;
+    written_ = false;
     buf_ = g->buffer(TexFormat::RGBA8, w_, h_, sampling_);
-    quad_ = buf_ ? g->quad(effect_, params.rect) : 0;
-    const float op = params.opacity * fade_;
+    quad_ = buf_ ? g->quad(effect_, drawn_params().rect) : 0;
+    const float op = drawn_params().opacity * fade_;
     if (!quad_ || !g->texture(quad_, "u_image", buf_) || !g->uniform(quad_, "u_opacity", &op, 1) ||
-        !g->turn(quad_, params.turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
+        !g->turn(quad_, drawn_params().turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
         *err = "image buffer or quad refused";
         detach(true);
         return false;
     }
     drawn_ = false;
     whole_ = true;   /* a new buffer holds nothing yet */
+    opq_buf_known_ = false;
+    opq_ver_++;
     start_animations();
     return true;
 }
@@ -259,6 +299,8 @@ void ImageLayer::detach(bool drop)
     buf_ = quad_ = 0;
     drawn_ = parked_ = hold_ = false;
     whole_ = true;
+    opq_buf_known_ = false;
+    opq_ver_++;
 }
 
 void ImageLayer::arrange(bool drawn, int32_t order)
@@ -276,9 +318,9 @@ void ImageLayer::place()
 {
     if (!g_)
         return;
-    const float op = params.opacity * fade_;
-    g_->place(quad_, params.rect);
-    g_->turn(quad_, params.turn());
+    const float op = drawn_params().opacity * fade_;
+    g_->place(quad_, drawn_params().rect);
+    g_->turn(quad_, drawn_params().turn());
     g_->uniform(quad_, "u_opacity", &op, 1);
 }
 
@@ -286,7 +328,7 @@ void ImageLayer::faded()
 {
     if (!g_)
         return;
-    const float op = params.opacity * fade_;
+    const float op = drawn_params().opacity * fade_;
     g_->uniform(quad_, "u_opacity", &op, 1);
 }
 
@@ -326,8 +368,18 @@ void ImageLayer::committed(bool ok, int64_t now_ms)
     if (ok) {
         writes_++;
         bytes_ += staged_;
+        written_ = written_ || staged_ > 0;
         whole_ = false;
+        /* The write carried every change waiting: the buffer is px_. */
+        if (opq_on_) {
+            opq_resolve();
+            opq_buf_ = opq_px_;
+            opq_buf_known_ = true;
+            opq_ver_++;
+        }
     } else {
+        opq_buf_known_ = false;
+        opq_ver_++;
         /* The buffer may hold part of it unflushed: write it all again. An
          * exclusive image holds the target until then (the layers below it
          * are suspended, so hiding it would show nothing); any other is
@@ -342,6 +394,100 @@ void ImageLayer::committed(bool ok, int64_t now_ms)
     }
     dirty_.clear();
     staged_ = 0;
+}
+
+void ImageLayer::opq_changed(const crk::PixelRect &r)
+{
+    for (uint32_t by = r.y / kOpaqueBlock; by <= (r.y + r.h - 1) / kOpaqueBlock; by++)
+        std::fill(&opq_px_[(size_t)by * opq_cols_ + r.x / kOpaqueBlock],
+                  &opq_px_[(size_t)by * opq_cols_ + (r.x + r.w - 1) / kOpaqueBlock] + 1, 2);
+}
+
+void ImageLayer::opq_resolve()
+{
+    for (uint32_t by = 0; by < opq_rows_; by++)
+        for (uint32_t bx = 0; bx < opq_cols_; bx++) {
+            uint8_t &o = opq_px_[(size_t)by * opq_cols_ + bx];
+            if (o != 2)
+                continue;
+            const uint32_t x0 = bx * kOpaqueBlock, x1 = std::min(w_, x0 + kOpaqueBlock);
+            const uint32_t y0 = by * kOpaqueBlock, y1 = std::min(h_, y0 + kOpaqueBlock);
+            uint8_t a = 255;
+            for (uint32_t y = y0; y < y1 && a == 255; y++) {
+                const uint8_t *p = &px_[((size_t)y * w_ + x0) * 4 + 3];
+                for (uint32_t x = x0; x < x1; x++, p += 4)
+                    a &= *p;
+            }
+            o = a == 255;
+        }
+}
+
+void ImageLayer::opq_summary()
+{
+    if (opq_sum_ver_ == opq_ver_)
+        return;
+    opq_resolve();
+    opq_all_buf_ = opq_all_both_ = true;
+    opq_none_buf_ = opq_none_both_ = true;
+    for (size_t b = 0; b < opq_px_.size(); b++) {
+        const bool buf = opq_buf_[b] != 0, both = buf && opq_px_[b] == 1;
+        opq_all_buf_ = opq_all_buf_ && buf;
+        opq_none_buf_ = opq_none_buf_ && !buf;
+        opq_all_both_ = opq_all_both_ && both;
+        opq_none_both_ = opq_none_both_ && !both;
+    }
+    opq_sum_ver_ = opq_ver_;
+}
+
+void ImageLayer::occlude(Coverage *cov, const Shown &s)
+{
+    const Rect &r = s.rect;
+    defer_starts_ = false;
+    if (!g_ || !s.drawn || parked_ || s.animating || s.opacity * s.fade < 1.0f || s.turned || !r.w || !r.h)
+        return;
+    if (!opq_on_) {
+        opq_on_ = true;
+        opq_cols_ = (w_ + kOpaqueBlock - 1) / kOpaqueBlock;
+        opq_rows_ = (h_ + kOpaqueBlock - 1) / kOpaqueBlock;
+        opq_px_.assign((size_t)opq_cols_ * opq_rows_, 2);
+        opq_buf_.assign(opq_px_.size(), 0);
+        /* The buffer holds px_ while nothing waits to be written. */
+        opq_buf_known_ = !whole_ && dirty_.empty();
+        if (opq_buf_known_) {
+            opq_resolve();
+            opq_buf_ = opq_px_;
+        }
+        opq_ver_++;
+    }
+    if (!opq_buf_known_)
+        return;
+    opq_summary();
+    /* What the buffer holds shows in the next flush, and the pixels waiting
+     * too when the budget allows the image's write this tick; while it
+     * does not, they cannot reach the scene. */
+    const bool both = s.budget_ready;
+    if (both ? opq_none_both_ : opq_none_buf_)
+        return;
+    if (both ? opq_all_both_ : opq_all_buf_) {
+        cov->add(box_of(r));
+        defer_starts_ = true;
+        return;
+    }
+    /* A target pixel samples about the image coordinate of its centre: the
+     * image pixels under it, one more each way for the filter. */
+    defer_starts_ = cov->add_if(box_of(r), [&](const Box &c) {
+        const int64_t ix0 = std::max<int64_t>(0, (int64_t)(c.x0 - r.x) * w_ / r.w - 1);
+        const int64_t ix1 = std::min<int64_t>(w_, ((int64_t)(c.x1 - r.x) * w_ + r.w - 1) / r.w + 1);
+        const int64_t iy0 = std::max<int64_t>(0, (int64_t)(c.y0 - r.y) * h_ / r.h - 1);
+        const int64_t iy1 = std::min<int64_t>(h_, ((int64_t)(c.y1 - r.y) * h_ + r.h - 1) / r.h + 1);
+        for (int64_t by = iy0 / kOpaqueBlock; by <= (iy1 - 1) / kOpaqueBlock; by++)
+            for (int64_t bx = ix0 / kOpaqueBlock; bx <= (ix1 - 1) / kOpaqueBlock; bx++) {
+                const size_t b = (size_t)by * opq_cols_ + (size_t)bx;
+                if (!opq_buf_[b] || (both && opq_px_[b] != 1))
+                    return false;
+            }
+        return true;
+    });
 }
 
 int64_t ImageLayer::wake_in_ms(int64_t now_ms) const
@@ -413,8 +559,8 @@ void EffectLayer::cluster_time()
 bool EffectLayer::attach(Graph *g, int64_t, std::string *err)
 {
     g_ = g;
-    quad_ = g->quad(effect_, params.rect);
-    if (!quad_ || !g->turn(quad_, params.turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
+    quad_ = g->quad(effect_, drawn_params().rect);
+    if (!quad_ || !g->turn(quad_, drawn_params().turn()) || !g->show(quad_, false) || !g->order(quad_, order_)) {
         *err = "effect quad refused";
         detach(true);
         return false;
@@ -450,8 +596,8 @@ void EffectLayer::place()
 {
     if (!g_)
         return;
-    g_->place(quad_, params.rect);
-    g_->turn(quad_, params.turn());
+    g_->place(quad_, drawn_params().rect);
+    g_->turn(quad_, drawn_params().turn());
 }
 
 void EffectLayer::restore(uint32_t, const Animation &a)

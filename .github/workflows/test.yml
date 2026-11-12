@@ -28,7 +28,8 @@ jobs:
   #   native/waze-on-cluster/  its jobs
   #   apps/<id>/               the app's tests
   #   native/<id>/test/        tests only: the tool's artifact leaves out test/
-  #   native/<id>/*.md, README.md, CONTRIBUTING.md, LICENSE, LICENSES/
+  #   native/<id>/*.md, README.md, CONTRIBUTING.md, AGENTS.md, CLAUDE.md,
+  #   LICENSE, LICENSES/
   #                            nothing (a nested
   #                            .md counts toward its tool's artifact)
   #   release/, tools/, .github/, any other path    every job
@@ -68,7 +69,7 @@ jobs:
                 continue
               fi
               case $f in
-              README.md|CONTRIBUTING.md|LICENSE|LICENSES/*) ;;
+              README.md|CONTRIBUTING.md|AGENTS.md|CLAUDE.md|LICENSE|LICENSES/*) ;;
               native/cluster-render/test/*) cr=true woc=true ;;
               native/cluster-render/*) cr=true woc=true ids="$ids native/cluster-render native/waze-on-cluster" ;;
               native/waze-on-cluster/test/*) woc=true ;;

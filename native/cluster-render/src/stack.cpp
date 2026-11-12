@@ -37,10 +37,11 @@ Arrangement arrange(std::vector<StackItem> items)
         return a.seq < b.seq;
     });
     Arrangement r;
-    /* The topmost drawable exclusive layer; everything below it waits. */
+    /* The topmost drawable exclusive layer whose pixels are on the display;
+     * everything below it waits. */
     size_t floor = 0;
     for (size_t i = items.size(); i-- > 0;)
-        if (items[i].visible && items[i].ready && items[i].exclusive) {
+        if (items[i].visible && items[i].ready && items[i].exclusive && items[i].shown) {
             floor = i;
             break;
         }

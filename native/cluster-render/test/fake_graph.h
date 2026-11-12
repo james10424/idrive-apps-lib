@@ -86,6 +86,7 @@ public:
     const int64_t *flush_cost_us = nullptr;
     long write_budget = -1;        /* refuse writes once this many bytes went; -1: never */
     bool fail_flush = false;
+    bool refuse_textures = false;  /* immutable_texture() refused, as a backend without the format */
     std::string name;
     std::map<std::string, FakeGraph *> *registry = nullptr;
     const std::map<int, unsigned> *effect_attributes = nullptr;   /* the Gpu's */
@@ -103,10 +104,19 @@ public:
         pending.buffers[next] = b;
         return next++;
     }
+    int immutable_texture(TexFormat f, uint32_t w, uint32_t h, Sampling s, Wrap wrap, const uint8_t *data,
+                          size_t n) override
+    {
+        if (refuse_textures || f != TexFormat::ETC2RGBA || n != tex_bytes(f, w, h))
+            return 0;
+        pending.buffers[next] = FakeBuffer{f, w, h, std::vector<uint8_t>(data, data + n), s, wrap};
+        return next++;
+    }
     bool write(int buf, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t *px) override
     {
         auto it = pending.buffers.find(buf);
-        if (it == pending.buffers.end() || x + w > it->second.w || y + h > it->second.h)
+        if (it == pending.buffers.end() || it->second.f == TexFormat::ETC2RGBA || x + w > it->second.w ||
+            y + h > it->second.h)
             return false;
         const size_t bpp = it->second.f == TexFormat::R8 ? 1 : 4;
         if (write_budget >= 0 && (long)(written + (size_t)w * h * bpp) > write_budget)
@@ -431,6 +441,7 @@ public:
     std::string reject;                   /* a fragment shader containing this fails to compile */
     std::map<std::string, FakeGraph *> live;   /* published scenes by target name */
     int scenes = 0;
+    bool refuse_textures = false;         /* each new scene's immutable_texture() refused */
     int64_t *clock_us = nullptr;
     int64_t flush_cost_us = 0;
 
@@ -472,6 +483,7 @@ public:
         g->clock_us = clock_us;
         g->flush_cost_us = &flush_cost_us;
         g->effect_attributes = &attrs;
+        g->refuse_textures = refuse_textures;
         live[t.name] = g;
         scenes++;
         return std::unique_ptr<Graph>(g);

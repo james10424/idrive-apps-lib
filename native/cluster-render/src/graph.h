@@ -16,6 +16,7 @@
 #ifndef CRS_GRAPH_H
 #define CRS_GRAPH_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <memory>
 #include <string>
@@ -29,8 +30,19 @@ struct Rect {
     int32_t x = 0, y = 0;
     uint32_t w = 0, h = 0;
 };
+inline bool operator==(const Rect &a, const Rect &b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; }
+inline bool operator!=(const Rect &a, const Rect &b) { return !(a == b); }
 
-enum class TexFormat { R8, RGBA8 };
+/* ETC2RGBA: ETC2 colour with EAC alpha, 16 bytes a 4x4 block
+ * (GL_COMPRESSED_RGBA8_ETC2_EAC); an immutable_texture(), never a buffer(). */
+enum class TexFormat { R8, RGBA8, ETC2RGBA };
+/* Bytes of a w x h texture of format f (ETC2RGBA: w and h multiples of 4). */
+inline size_t tex_bytes(TexFormat f, uint32_t w, uint32_t h)
+{
+    if (f == TexFormat::ETC2RGBA)
+        return (size_t)(w / 4) * (h / 4) * 16;
+    return (size_t)w * h * (f == TexFormat::R8 ? 1 : 4);
+}
 enum class Sampling { Nearest, Bilinear };
 enum class Wrap { Clamp, Repeat };
 
@@ -117,6 +129,10 @@ public:
     /* Likewise, with the sampler's wrap. */
     virtual int buffer(TexFormat f, uint32_t w, uint32_t h, Sampling s, Wrap wrap) = 0;
     virtual bool write(int buf, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t *px) = 0;
+    /* An immutable texture of n bytes (one mip level) and its sampler,
+     * handled as a buffer (texture(), drop_buffer()) but never written.
+     * Only ETC2RGBA, only where the backend takes it: 0 otherwise. */
+    virtual int immutable_texture(TexFormat, uint32_t, uint32_t, Sampling, Wrap, const uint8_t *, size_t) { return 0; }
     /* A quad over r drawn by effect, hidden until show(). Blended over what
      * is below (source alpha), no depth test. */
     virtual int quad(int effect, const Rect &r) = 0;

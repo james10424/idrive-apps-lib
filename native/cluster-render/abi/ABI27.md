@@ -12,7 +12,7 @@ https://github.com/bmwcarit/ramses (commit
 `client/ramses-client/ramses-client-api/include` and
 `framework/ramses-framework-api/include`): the ones the service includes
 (`src/graph_ramses27.cpp`, `src/unit_idrive8.cpp`, `test/ramses_check.cpp`)
-and theirs, 66 files, BMW Car IT, MPL-2.0. The unit's library is BMW's
+and theirs, 67 files, BMW Car IT, MPL-2.0. The unit's library is BMW's
 build of that version ("r1") with a few exports of its own (below).
 
 Labels as in [ABI.md](ABI.md): **VERIFIED** (seen in the binary or the

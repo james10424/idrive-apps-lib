@@ -94,6 +94,12 @@ async function main() {
     const font = ovl.asset({ target: 'panel', format: 'r8', w: 64, h: 32, sampling: 'bilinear' });
     ok('an asset takes its pixels', font > 0 && ovl.pixels(font, null, Buffer.alloc(64 * 32, 200)) &&
         ovl.frameBytes(font) === 64 * 32);
+    ok('an etc2rgba asset is 4x4 blocks', ovl.asset({ target: 'panel', format: 'etc2rgba', w: 250, h: 8 }) === 0);
+    const tex = ovl.asset({ target: 'panel', format: 'etc2rgba', w: 2048, h: 1024 });
+    ok('a 2048x1024 one takes its blocks whole, 16 bytes each, and no rects',
+        tex > 0 && !ovl.pixels(tex, null, Buffer.alloc(2048 * 1024 - 16)) &&
+        !ovl.pixels(tex, [{ x: 0, y: 0, w: 4, h: 4 }], Buffer.alloc(16)) &&
+        ovl.pixels(tex, null, Buffer.alloc(2048 * 1024, 7)) && ovl.frameBytes(tex) === 2048 * 1024);
     const label = ovl.effect({ target: 'panel', klass: 'overlay', x: 40, y: 600, w: 128, h: 64, time: true,
         fs: '#version 100\nprecision mediump float;\nuniform sampler2D u_atlas;\nuniform vec4 u_cells[2];\n' +
             'uniform float u_time;\nvarying vec2 v_uv;\n' +

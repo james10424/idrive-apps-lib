@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Robert Nisipeanu
 #include "video_producer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <fcntl.h>
 #include <time.h>
@@ -37,7 +38,7 @@ const char *source_name(int s) { return s == kAvb ? "avb" : "udp"; }
 
 VideoProducer::VideoProducer(const VideoConfig &cfg)
     : cfg_(cfg), atlas_bytes_((size_t)cfg.tex_width * atlas_height(cfg.tex_height)),
-      change_(cfg.tex_width, cfg.tex_height), freeze_(cfg.freeze)
+      change_(cfg.tex_width, cfg.tex_height), freeze_(cfg.freeze), pace_(cfg.picture_fps)
 {
     rtp_sink_ = [this](const uint8_t *d, size_t n, bool end_of_au) { on_nal(d, n, end_of_au); };
     rtp_.on_gap = [this](const RtpH264::Gap &g) { gaps_.gap(g, packet_->source, packet_->dropped); };
@@ -206,9 +207,54 @@ void VideoProducer::receive(const uint8_t *data, size_t len, int source)
 void VideoProducer::decode_loop()
 {
     PacketQueue::Packet p;
-    while (!queue_.closed())
-        if (queue_.pop(&p, 500))
+    while (!queue_.closed()) {
+        /* A frame the pace left without a picture gets it when nothing
+         * waits to be decoded at its slot (picture_pace.h). */
+        if (queue_.pop(&p, late_wait_ms()))
             feed_datagram(p);
+        else
+            picture_paced();
+    }
+}
+
+int VideoProducer::late_wait_ms() const
+{
+    if (!cfg_.picture_fps)
+        return 500;
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    return paced_ ? (int)std::min<int64_t>(pace_.late_in_ms(cld::now_ms()), 500) : 500;
+}
+
+void VideoProducer::picture_paced()
+{
+    if (!cfg_.picture_fps)
+        return;
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!paced_ || pace_.late_in_ms(cld::now_ms()) > 0)
+        return;
+    paced_ = false;
+    bool given = false;
+    if (pictures_.load()) {
+        if (resumed_.load()) {
+            decoder_.forget_last();   /* the feeds made since have not had it */
+            pace_.reset();
+        }
+        std::string derr;
+        decoder_.picture_skipped(
+            [this, &given](const VideoFrame &f) {
+                given = true;
+                pace_.took(cld::now_ms());
+                on_frame(f, true);
+            },
+            &derr);
+        if (!derr.empty()) {
+            std::lock_guard<std::mutex> flock(frame_mutex_);
+            last_err_ = derr;
+            decode_errs_++;
+        }
+    }
+    if (!given)
+        paced_total_++;
 }
 
 void VideoProducer::feed_datagram(const PacketQueue::Packet &p)
@@ -313,10 +359,17 @@ void VideoProducer::decode(const uint8_t *data, size_t len, bool end_of_au)
 {
     std::string derr;
     catching_up_ = packet_ && packet_->later_frame;
-    const bool picture = !catching_up_ && pictures_.load();
-    if (picture && resumed_.load())
+    bool picture = !catching_up_ && pictures_.load();
+    if (picture && resumed_.load()) {
         decoder_.forget_last();   /* the feeds made since have not had it */
-    const bool ok = decoder_.feed(data, len, [this](const VideoFrame &f) { on_frame(f); }, &derr, end_of_au, picture);
+        pace_.reset();
+    }
+    /* Decided per call, recorded per frame (on_decoded): a call may carry
+     * part of a frame, and its frame come out of a later one. */
+    pace_skip_ = picture && !pace_.due(cld::now_ms());
+    if (pace_skip_)
+        picture = false;
+    const bool ok = decoder_.feed(data, len, [this](const VideoFrame &f) { on_decoded(f); }, &derr, end_of_au, picture);
     const bool decoding = decoder_.decoding();
     if (ok && decoding == decoding_)
         return;
@@ -335,7 +388,22 @@ void VideoProducer::decode(const uint8_t *data, size_t len, bool end_of_au)
     decoding_ = decoding;
 }
 
-void VideoProducer::on_frame(const VideoFrame &f)
+void VideoProducer::on_decoded(const VideoFrame &f)
+{
+    if (paced_) {   /* a newer frame came: that one stays without a picture */
+        paced_ = false;
+        paced_total_++;
+    }
+    if (f.atlas || f.same) {
+        pace_.took(cld::now_ms());
+    } else if (pace_skip_) {
+        paced_ = true;   /* only the pace's frames get a late picture */
+        queue_.wake();   /* the decode thread waits for its slot from now */
+    }
+    on_frame(f, false);
+}
+
+void VideoProducer::on_frame(const VideoFrame &f, bool late)
 {
     if (!f.atlas && !f.same) {
         std::lock_guard<std::mutex> lock(frame_mutex_);
@@ -356,15 +424,18 @@ void VideoProducer::on_frame(const VideoFrame &f)
     const bool sampled = sized && f.atlas && change_.changed(f.atlas->data());
     const bool changed = sized && f.atlas && (resumed_.exchange(false) || sampled);
     std::lock_guard<std::mutex> lock(frame_mutex_);
-    timing_.frame(f.held);
-    const std::string line = health_.frame(cld::now_ms(), f.corrupted, gaps_.after_loss());
-    if (!line.empty())
-        log_info("%s", line.c_str());
+    if (!late) {   /* a late picture's frame was counted when it was decoded */
+        timing_.frame(f.held);
+        const std::string line = health_.frame(cld::now_ms(), f.corrupted, gaps_.after_loss());
+        if (!line.empty())
+            log_info("%s", line.c_str());
+    }
     if (sized) {
         const int64_t now = now_us() / 1000;
         freeze_.frame(now, changed, change_.blank());
         tally_.frame(now, changed, change_.blank());
-        last_frame_ms_ = now;
+        if (!late)
+            last_frame_ms_ = now;
     }
     if (!back_dirty_ && !repeat_ && ready_[1] >= 0) {
         const char b = 1;
@@ -383,7 +454,7 @@ void VideoProducer::on_frame(const VideoFrame &f)
         same_total_++;
         repeat_ = !back_dirty_;   /* a frame still to be taken is this picture */
     }
-    back_id_ = decoded_total_.fetch_add(1) + 1;
+    back_id_ = late ? decoded_total_.load() : decoded_total_.fetch_add(1) + 1;
 }
 
 bool VideoProducer::take(std::vector<uint8_t> *frame, uint64_t *id, bool *same)

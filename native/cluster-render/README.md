@@ -75,9 +75,13 @@ cluster is offered, and what differs is in "iDrive 8".
 - **Layered stack.** Every layer is drawn at once, bottom to top by class
   (ambient, content, overlay, alert), then the client's `z`, then the newest
   on top. A layer marked `exclusive` hides the layers below it while it is
-  drawn. They are suspended, not removed, and come back in the flush it
-  goes. A change of the stack is one flush: no display traffic, so a client
-  replacing another is instant.
+  drawn, from the flush after its first write went: until then it is drawn
+  over them, and they stay shown. They are suspended, not
+  removed, and come back in the flush it goes. A target with an alert or
+  exclusive layer waiting for its first write stages first, so that write
+  takes the next allowance of the upload budget. A change of the stack is
+  one flush: no display traffic, so a client replacing another is
+  instant.
 - **Refcounted slots.** A target is requested while at least one visible
   layer has content (or is `prewarm`) and is released only when none has for
   `<target>_linger_ms`, after the fade-out below. While it lingers the scene
@@ -189,9 +193,10 @@ cluster is offered, and what differs is in "iDrive 8".
   - Take-overs are 1.5 s apart four times, then 10 s, then every 30 s while
     the stock content keeps coming back on top; never two less than 1.5 s
     apart. The count starts over once the target has been shown for 10 s,
-    and when it is released because nothing wants it (not a guide hold,
-    whose map can come and go faster); a target shown and parked again
-    sooner keeps backing off.
+    and when it is released because nothing wants it or because the
+    display accepted it and does not map it (not a guide hold, whose map
+    can come and go faster); a target shown and parked again sooner keeps
+    backing off.
   - Never content of anything other than the stock HMI, never without a
     contending layer, never in any other slot. Each one is logged with
     what was unmapped, and so is the KOMBI's reply. Unmap replies are
@@ -227,6 +232,17 @@ cluster is offered, and what differs is in "iDrive 8".
   at least 1 s apart, with one outstanding. A fetch failed within 2 s of the
   scene's publication (the renderer not having seen it yet) is asked again
   after 250 ms, three times, before the ladder.
+- **Accepted, not mapped.** For every target and slot: a map the display
+  accepted (`E_DCSM_OK`) with no map status within 3 s (the map asked
+  again every 0.5 s meanwhile), or a parked, shown or lingering scene whose
+  own row the slot table reports unmapped, with no map status, for 3 s, is
+  released and asked for again (fetch and map) as a loss: on the ladder, at
+  once when its slot comes back from a lock, never while it is locked, and
+  not upload evidence. VERIFIED on the car (2026-11-12): a lock unmaps a
+  scene parked in the locked slot with no map status, and the KOMBI does
+  not map it again when the slot is free, take-overs or not. A parked
+  scene the stock map stays ahead of is the take-overs' business, not
+  this.
 - **Releases confirmed.** After a release, the next request of that scene
   id waits until the KOMBI confirms the release: the replies to the unmap
   and the unfetch, and the REMOVED of the fetch when there was one (about
@@ -553,7 +569,69 @@ Beside the layers:
   glyph atlas or sprites. Not drawn, so they never make a target wanted;
   kept on the CPU, written whole into each new scene and in place as they
   change, before the layers, within the budget. A layer sampling one is
-  drawn only while its buffer holds it whole.
+  drawn only while its buffer holds it whole. An `etc2rgba` asset is ETC2
+  RGBA with EAC alpha, 1 byte a pixel: sent whole once, an immutable
+  texture made from it in each scene, charged once (no rectangle scratch),
+  so a 2048x1024 atlas takes 2 MiB of the pixel memory where RGBA8 takes
+  16. On iDrive 7 the KOMBI draws it (car test, [TEST-ETC2.md](TEST-ETC2.md));
+  iDrive 8's RAMSES 27 path is built the same way, not tried on a car. A
+  texture the renderer refuses puts the layers sampling it in `error`.
+  `tools/etc2_test/etc2_encode.py` encodes a frame or an atlas.
+- **Several videos** (`src/video_composite.h`): the display holds the
+  buffers of at most two videos, its memory unmeasured. While it holds
+  them all, each video draws itself as above. Past that, the videos on a
+  target, unturned, at their frame's size and at even x and y, are composed
+  on the head unit's CPU into one video layer, on as few targets as it
+  takes: one set of buffers, one video in the budget and the dirty-tile
+  planner (so while one of them moves past the budget, all go packed).
+  The composite is made again for its videos' rectangle growing past it
+  at most once a second (over the old rectangle and the new together; till
+  then what lies outside is cut), and smaller once a smaller rectangle has
+  held for 3 s, so a sliding video does not churn the display's buffers.
+  A `set` that makes a video start or stop being composited (an odd x, a
+  turn) takes effect at most once a second on its target; till then a
+  composited one is drawn unturned, at its frame's size and at even x and
+  y. A video moved or shown again keeps its quads where they were until the
+  flush whose write puts it there on the composite, so they never show a
+  place that does not hold it yet. Only the 64x64 tiles a video changed
+  are composed again, copied where the top video is opaque or alone and
+  blended (SSE2) only where translucent videos overlap; each video is drawn
+  by its own quads over its rect, sampling its part, at its place in the
+  stack and its opacity. A turned, scaled or odd-placed video keeps buffers
+  of its own. Clients have up to 8 video layers together.
+- **Hidden tiles** (`src/occlusion.h`): a video's 64x64 tiles wholly under
+  opaque layers drawn above it on its target are not written while they
+  stay hidden, a composite's likewise. Opaque means a video drawn
+  unturned at opacity times the target's fade 1, once its first frame is
+  written; an image likewise, only where its pixels, both those its buffer
+  holds and those waiting to be written, have alpha 255; never an effect or
+  a mesh layer, an animated image, or anything turned, translucent or
+  fading; and only for layers drawn strictly below it. A tile counts as
+  hidden when every on-screen pixel it can change is covered, chroma tiles
+  and the grid's edge tiles included, so a camera as large as the map hides
+  all of it. A hidden tile that has changed goes in the flush that uncovers
+  it (a layer above moved, hidden, made translucent, turned, faded,
+  animated or gone, or the video moved or shown), whatever the video's
+  frame clock; its target stages first, so the write takes the next
+  positive allowance. Until the budget allows it, only that change waits
+  (the scene keeps the layer it concerns as last flushed, its new
+  animations not started), with an exclusive layer and the layers it
+  suspends together, and everything else on the target flushes as usual:
+  the wait is the time the budget takes to repay what it owes, and at most
+  one write of another target that has waited longer (targets uncover
+  longest-waiting first). A held layer's fade applies to its last flushed
+  opacity. An image's pixels waiting to be written count only while the
+  budget allows that write. Changes that cannot wait so go at once: a layer
+  removed (with what an exclusive one resumes), an image hidden after a
+  failed write, video objects made again (a composite made or dropped),
+  and a composited video hidden or put at another place in the draw order.
+  The video they uncover writes in that flush whatever the budget allows:
+  with packed blocks its newest frame packed (the exact atlas follows
+  within the budget), without them every changed tile, and nothing when no
+  tile it uncovers differs from its newest frame past the threshold; it
+  then hides no tile until a write the budget allowed has gone, so such
+  writes never come back to back. With nothing opaque over a
+  video, every tile is planned and written by the dirty-tile rules alone.
 - **Turns**: video, image and effect quads rotate and scale about a pivot
   (a needle), each under two group nodes in the scene.
 - **Animations**: keys the renderer plays by itself (one real-time
@@ -976,6 +1054,66 @@ The host tests:
   target staging nothing, and a released target's warm scene; the limits
   (64 layers a client, 96 in all) and 96 small layers changing every tick
   past the 5500 KB/s ceiling, written within it, each an even share;
+- `video_composite_test`: one video, and two on one target or on two,
+  draw themselves and drive the renderer call for call and byte for byte
+  as recorded from the build before composites (`test/video_trace.h`); a
+  third composing on as few targets as it takes, and separating again; a
+  camera joining a shown map between passes, and sets, traced the same way;
+  a video joining a kept composite at its opacity at once; a refused video
+  not tried again until its scene is published again, and its refusal
+  gone once it is composited; a video sliding every tick for 10 s remaking
+  the composite at most once a second and shrinking it after; a video moved
+  faster than the budget writes, hidden, shown and with flushes refused,
+  its quads never over a place that does not hold it; a video stepped 1 px
+  a set for 10 s making a bounded number of buffers; a video arriving
+  while a composite waits to shrink priced against the one held; a held
+  change refused when it would not fit once taken, and videos let in past
+  what fits changing no buffer; a composite made with a video held at an
+  odd x starting at the even x; the
+  blend and cells, SSE2 and
+  scalar equal, against a float reference; an opaque video drawn through
+  the composite exactly as alone (the shaders' CPU twins); two, three and
+  four videos on one target (two on a one-buffer display) with order,
+  opacity, overlap and none; only
+  changed tiles composed and written; hiding, showing, moving, fading; the
+  limits and refusals (client videos, display buffers, memory, span, a
+  `set`); the last other video leaving and the remaining one drawing itself
+  again; at most two video buffers on the display whatever comes and goes;
+  three moving videos within 5500 KB/s; the composing cost, printed;
+- `occlusion_test`: the coverage's cells and the tiles' footprints (luma,
+  chroma, scaled); the tiles under an opaque camera left unwritten; nothing
+  hidden under a translucent, turned or scaled camera, an effect layer, an
+  image with transparent pixels (written or waiting), an animated image;
+  a camera, an image, a fade, packed blocks, a composite under an image
+  and a scaled map under a composite, moved, hidden, shown, made
+  translucent and turned faster than a tight budget writes, with refused
+  flushes and writes: no flush shows a part of a video from another frame
+  than the rest; the map panning past the budget (and after resent's
+  charge) while an image over a panel video moves and hides: the panel's
+  other changes flush every tick, the image's change waits only for the
+  budget's debt; a hidden tile changed within the threshold kept across a
+  scene published again; a camera as large as the map hiding every map
+  tile (the map writing nothing while covered, the camera the budget),
+  moved aside, back and removed with nothing stale; an 800x480 camera
+  hiding exactly the tiles it covers, chroma ones included; an exclusive
+  alert dismissed or removed during a pan, made before or after the video,
+  never showing neither, and removed while above it an image hides and
+  another moves onto it; an exclusive alert added again and again during a
+  pan past the budget, shown within 300 ms each time, never showing neither;
+  an image animated and stopped every tick, no write
+  going while the budget is in debt; an image removed and made again,
+  writes past the budget never back to back; a composite the renderer
+  refuses over a scaled map, the map shown and nothing hidden; a held
+  opacity change meeting a fade step, nothing stale; a camera sliding or
+  jumping over a panning map and a panel change uncovering within the
+  debt and one map frame; a full-slot camera's client gone mid-pan, its
+  map's forced write packed, every window within the rate, the burst and a
+  frame and a packed frame; a hole made transparent in an image under a
+  saturated budget, never forced; with nothing opaque over a video, every
+  renderer call and byte equal to the trace recorded from the base branch
+  (a camera at 0.9 or turned, Waze on the cluster and the HUD, an overlay
+  with transparent pixels); a minute's bytes under an
+  opaque, a translucent and a moving camera, and the cost a tick, printed;
 - `dcsm2_port_test`: the Dcsm2 request sequence, parked and promoted
   mappings, take-overs, reply matching and refusal kinds; the undecoded
   notifications' rate limit, subscription answers, the no-answer line and

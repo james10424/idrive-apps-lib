@@ -4,8 +4,10 @@
 /* Proves carplay_patch.js against the unit's carplay binary (CARPLAY_BIN): the
  * located sites are the documented ones, the proven build's SHA gate, variant
  * apply (high and mid), the sink redirect, the self-start call retarget, the
- * resolution geometry and safe-area rewrite, region-bounded diffs, idempotence,
- * verify, partial patches, byte-exact revert of all four edits, a build not in
+ * resolution geometry and safe-area rewrite, the map URL edit (its old bytes,
+ * a patch without it brought up to date, bytes another tool left there kept),
+ * region-bounded diffs, idempotence,
+ * verify, partial patches, byte-exact revert of every edit, a build not in
  * the proven list, a read-only probe, the cluster-coding gate, and the
  * patch record's proven and trial. Without CARPLAY_BIN it skips.
  *
@@ -41,6 +43,20 @@ var RES_DEFAULT = ['48ba8a0000003d000000', '48b840040000e0010000', '48b800000000
 /* The same size with the safe area the whole frame (--safe full). */
 var RES_FULLSAFE = ['48ba8a0000003d000000', '48b840040000e0010000', '48b80000000040040000', '48b8e001000000000000'];
 function inResRegion(x) { return RES_OFFS.some(function (o) { return x >= o + 2 && x < o + 10; }); }
+/* Edit 5 (map URL): the 55-byte log string at 0x257838 holds a shorter log
+ * text and the URL (at 0x25784f), and the lea rsi at 0x7b533 loads the URL
+ * instead of "" (0x294793). */
+var MAPURL = [
+    [0x257838, Buffer.from('Head-Unit does not support Alternate Displays feature.\0', 'latin1').toString('hex'),
+        Buffer.from('Head-Unit: no AltDisp.\0maps:/car/instrumentcluster/map\0', 'latin1').toString('hex')],
+    [0x7b533, '488d3559922100', '488d3515c31d00'],
+];
+function mapUrlBytes(buf) { return MAPURL.map(function (m) { return buf.toString('hex', m[0], m[0] + m[1].length / 2); }); }
+function mapUrlIs(buf, i) { return JSON.stringify(mapUrlBytes(buf)) === JSON.stringify(MAPURL.map(function (m) { return m[i]; })); }
+function inMapUrl(x) { return MAPURL.some(function (m) { return x >= m[0] && x < m[0] + m[1].length / 2; }); }
+/* A copy of `buf` with the map URL ranges as shipped: the patch of an
+ * earlier release. */
+function withoutMapUrl(buf) { var b = Buffer.from(buf); MAPURL.forEach(function (m) { Buffer.from(m[1], 'hex').copy(b, m[0]); }); return b; }
 /* Build an "older patch" binary: variant + sink applied, self-start still stock
  * (what the car runs today). Patches the bytes directly, bypassing the patcher. */
 function makeEdit12Only(panel, sinkUrl) {
@@ -74,37 +90,53 @@ var SRCBUF = fs.readFileSync(SRC);
 try {
     var r;
     r = run(['status', '--target', tgt]);
-    ok('status: pristine, variant ORIGINAL, sink ORIGINAL, selfstart ORIGINAL, res ORIGINAL',
-        /variant:\s+ORIGINAL/.test(r.out) && /sink:\s+ORIGINAL/.test(r.out) && /selfstart:\s+ORIGINAL/.test(r.out) && /res:\s+ORIGINAL \(IC_HIGH advertises 1920x900\)/.test(r.out) && /pristine/.test(r.out), r.out);
+    ok('status: pristine, variant ORIGINAL, sink ORIGINAL, selfstart ORIGINAL, res ORIGINAL, mapurl ORIGINAL',
+        /variant:\s+ORIGINAL/.test(r.out) && /sink:\s+ORIGINAL/.test(r.out) && /selfstart:\s+ORIGINAL/.test(r.out) && /res:\s+ORIGINAL \(IC_HIGH advertises 1920x900\)/.test(r.out) &&
+        /^mapurl:\s+ORIGINAL \(the phone streams the cluster map once a route starts\)$/m.test(r.out) && /pristine/.test(r.out), r.out);
+    ok('stock map URL bytes are the proven ones', mapUrlIs(SRCBUF, 1), JSON.stringify(mapUrlBytes(SRCBUF)));
     ok('status: proven, version 22.28.3', /proven:\s+yes/.test(r.out) && /version:\s+22\.28\.3/.test(r.out), r.out);
     ok('stock res immediates are the proven ones', JSON.stringify(resImmediates(SRCBUF)) === JSON.stringify(RES_STOCK), JSON.stringify(resImmediates(SRCBUF)));
 
     r = run(['verify', '--target', tgt]);
-    ok('verify: original exits 0, self-start off, res stock', r.code === 0 && /variant original, sink original \(AVB 15\), self-start off, res stock/.test(r.out), r.out);
+    ok('verify: original exits 0, self-start off, res stock, map URL off', r.code === 0 && /variant original, sink original \(AVB 15\), self-start off, res stock, map URL off/.test(r.out), r.out);
 
     r = run(['apply', '--target', tgt, '--panel', 'high']);
     ok('apply without --yes refuses', r.code !== 0 && /--yes/.test(r.out) && sha256(tgt) === ORIG_SHA, r.out);
 
     /* avb mode: variant + self-start + resolution, stock sink (no --sink/--capture) */
     r = run(['apply', '--target', tgt, '--panel', 'high', '--yes']);
-    ok('apply high (avb mode) succeeds', r.code === 0 && /patched OK/.test(r.out) && /self-start -> requestStream/.test(r.out) && /resolution -> 1088x480 at 138x61mm/.test(r.out), r.out);
+    ok('apply high (avb mode) succeeds', r.code === 0 && /patched OK/.test(r.out) && /self-start -> requestStream/.test(r.out) && /resolution -> 1088x480 at 138x61mm/.test(r.out) &&
+        /map URL -> maps:\/car\/instrumentcluster\/map/.test(r.out), r.out);
+    /* The app's patch (high, stock AVB sink, default geometry) as tested on the car. */
+    ok('apply high (avb mode): the patched carplay 22.28.3', sha256(tgt) === '035c35a40fae0af00ef4bd5ff69d3ce7ff00202d6ad99d770d8b6f1fdc8bed05', sha256(tgt));
     ok('backup is pristine', sha256(tgt + '.woc-orig') === ORIG_SHA);
     var d = diffs(SRCBUF, fs.readFileSync(tgt));
-    ok('avb-mode diff stays in the slot, the call rel32 and the res immediates', d.length >= 2 &&
-        d.every(function (x) { return (x >= SLOT && x < SLOT + 4) || (x >= CALL && x < CALL + CALL_LEN) || inResRegion(x); }),
+    ok('avb-mode diff stays in the slot, the call rel32, the res immediates and the map URL ranges', d.length >= 2 &&
+        d.every(function (x) { return (x >= SLOT && x < SLOT + 4) || (x >= CALL && x < CALL + CALL_LEN) || inResRegion(x) || inMapUrl(x); }),
         JSON.stringify(d.map(function (x){return '0x'+x.toString(16);})));
     ok('slot = IC_HIGH (bcf2f7ff)', fs.readFileSync(tgt).slice(SLOT, SLOT + 4).toString('hex') === 'bcf2f7ff');
     ok('call retargeted to requestStream', callBytes(fs.readFileSync(tgt)) === CALL_SELF, callBytes(fs.readFileSync(tgt)));
+    ok('map URL ranges patched', mapUrlIs(fs.readFileSync(tgt), 2), JSON.stringify(mapUrlBytes(fs.readFileSync(tgt))));
     ok('res immediates advertise 1088x480 at 138x61mm, safe 504x368 at 286,72',
         JSON.stringify(resImmediates(fs.readFileSync(tgt))) === JSON.stringify(RES_DEFAULT), JSON.stringify(resImmediates(fs.readFileSync(tgt))));
     r = run(['status', '--target', tgt]);
-    ok('status: avb mode is SELF-START + sink ORIGINAL + res PATCHED', /selfstart:\s+SELF-START/.test(r.out) && /sink:\s+ORIGINAL/.test(r.out) && /res:\s+PATCHED \(IC_HIGH advertises 1088x480 at 138x61mm, safe 504x368 at 286,72\)/.test(r.out), r.out);
+    ok('status: avb mode is SELF-START + sink ORIGINAL + res PATCHED + mapurl PATCHED', /selfstart:\s+SELF-START/.test(r.out) && /sink:\s+ORIGINAL/.test(r.out) && /res:\s+PATCHED \(IC_HIGH advertises 1088x480 at 138x61mm, safe 504x368 at 286,72\)/.test(r.out) &&
+        /^mapurl:\s+PATCHED \(the phone streams the cluster map from connect: maps:\/car\/instrumentcluster\/map\)$/m.test(r.out), r.out);
     r = run(['verify', '--target', tgt]);
-    ok('verify: high avb exits 0 with res 1088x480', r.code === 0 && /res 1088x480/.test(r.out), r.out);
+    ok('verify: high avb exits 0 with res 1088x480 and the map URL on', r.code === 0 && /res 1088x480, map URL on/.test(r.out), r.out);
 
     r = run(['revert', '--target', tgt, '--yes']);
-    ok('revert restores byte-exact original (all four edits)', r.code === 0 && sha256(tgt) === ORIG_SHA && callBytes(fs.readFileSync(tgt)) === CALL_STOCK &&
-        JSON.stringify(resImmediates(fs.readFileSync(tgt))) === JSON.stringify(RES_STOCK));
+    ok('revert restores byte-exact original (every edit)', r.code === 0 && sha256(tgt) === ORIG_SHA && callBytes(fs.readFileSync(tgt)) === CALL_STOCK &&
+        JSON.stringify(resImmediates(fs.readFileSync(tgt))) === JSON.stringify(RES_STOCK) && mapUrlIs(fs.readFileSync(tgt), 1));
+
+    /* Without a backup, the map URL ranges are rebuilt from the proven
+     * build's shipped bytes with the rest. */
+    run(['apply', '--target', tgt, '--panel', 'high', '--yes']);
+    [tgt + '.woc-orig', tgt + '.woc-orig.json'].forEach(function (f) { fs.unlinkSync(f); });
+    r = run(['status', '--target', tgt]);
+    ok('no backup: the patch with the map URL edit is restorable', /^restorable:\s+yes$/m.test(r.out), r.out);
+    r = run(['revert', '--target', tgt, '--yes']);
+    ok('no backup: revert rebuilds the shipped file, map URL ranges included', r.code === 0 && /shipped bytes/.test(r.out) && sha256(tgt) === ORIG_SHA, r.out);
 
     /* variant + capture together */
     var fifo = '/run/woc/alt.h264';
@@ -118,7 +150,8 @@ try {
     ok('redirect NUL-padded, no overrun into the next string', b.slice(SINK + SINK_LEN, SINK + SINK_LEN + 5).equals(SRCBUF.slice(SINK + SINK_LEN, SINK + SINK_LEN + 5)) && b.slice(SINK + SINK_LEN + 5, SINK + SINK_LEN + 16).toString('latin1') === 'mCarPlay->G');
     ok('call retargeted to requestStream', callBytes(b) === CALL_SELF, callBytes(b));
     var d2 = diffs(SRCBUF, b);
-    ok('all diffs within slot, sink or call regions', d2.every(function (x) { return (x >= SLOT && x < SLOT + 4) || (x >= SINK && x < SINK + SINK_LEN) || (x >= CALL && x < CALL + CALL_LEN); }), 'n=' + d2.length);
+    ok('all diffs within slot, sink, call or map URL regions', d2.every(function (x) { return (x >= SLOT && x < SLOT + 4) || (x >= SINK && x < SINK + SINK_LEN) || (x >= CALL && x < CALL + CALL_LEN) || inMapUrl(x); }), 'n=' + d2.length);
+    ok('mid applies the map URL edit too', mapUrlIs(b, 2), JSON.stringify(mapUrlBytes(b)));
 
     ok('mid leaves the res immediates stock', JSON.stringify(resImmediates(fs.readFileSync(tgt))) === JSON.stringify(RES_STOCK));
     r = run(['status', '--target', tgt]);
@@ -256,11 +289,12 @@ try {
     ok('edit-1/2-only: verify FAILS as partially patched', r.code !== 0 && /partially patched/.test(r.out), r.out);
     var e12buf = fs.readFileSync(e12);
     r = run(['apply', '--target', e12, '--panel', 'high', '--sink', 'udp://127.0.0.1:20557?mime_type=video/H264', '--yes']);
-    ok('edit-1/2-only: the Patch button applies self-start and resolution (not "nothing to do")', r.code === 0 && /self-start -> requestStream/.test(r.out) && /resolution -> 1088x480/.test(r.out) && !/nothing to do/.test(r.out), r.out);
+    ok('edit-1/2-only: the Patch button applies self-start, resolution and the map URL (not "nothing to do")', r.code === 0 && /self-start -> requestStream/.test(r.out) && /resolution -> 1088x480/.test(r.out) &&
+        /map URL -> /.test(r.out) && !/nothing to do/.test(r.out), r.out);
     var e12now = fs.readFileSync(e12);
     var d3 = diffs(e12buf, e12now);
-    ok('edit-1/2-only: the Patch button changed only the call rel32 and the res immediates', d3.length >= 1 &&
-        d3.every(function (x) { return (x >= CALL && x < CALL + CALL_LEN) || inResRegion(x); }), JSON.stringify(d3.map(function (x){return '0x'+x.toString(16);})));
+    ok('edit-1/2-only: the Patch button changed only the call rel32, the res immediates and the map URL ranges', d3.length >= 1 &&
+        d3.every(function (x) { return (x >= CALL && x < CALL + CALL_LEN) || inResRegion(x) || inMapUrl(x); }), JSON.stringify(d3.map(function (x){return '0x'+x.toString(16);})));
     ok('edit-1/2-only: now SELF-START, variant+sink unchanged', callBytes(e12now) === CALL_SELF && e12now.slice(SLOT, SLOT + 4).toString('hex') === 'bcf2f7ff');
     r = run(['verify', '--target', e12]);
     ok('edit-1/2-only: verify now passes', r.code === 0 && /self-start on/.test(r.out), r.out);
@@ -289,6 +323,59 @@ try {
         JSON.stringify(d4.map(function (x){return '0x'+x.toString(16);})));
     r = run(['verify', '--target', e123]);
     ok('pre-resolution patch: verify now passes', r.code === 0 && /res 1088x480/.test(r.out), r.out);
+
+    /* The patch of an earlier release (every other edit, the map URL ranges
+     * stock): it reads ORIGINAL there and verifies, and the Patch button adds
+     * only the map URL ranges. */
+    var e1234 = path.join(dir, 'carplay_edit1234');
+    fs.writeFileSync(e1234, SRCBUF);
+    run(['apply', '--target', e1234, '--panel', 'high', '--yes']);
+    var b1234 = withoutMapUrl(fs.readFileSync(e1234));
+    fs.writeFileSync(e1234, b1234);
+    r = run(['status', '--target', e1234]);
+    ok('pre-map-URL patch: res PATCHED, mapurl ORIGINAL', /res:\s+PATCHED/.test(r.out) && /^mapurl:\s+ORIGINAL/m.test(r.out) && /known:\s+yes, modified build/.test(r.out), r.out);
+    r = run(['verify', '--target', e1234]);
+    ok('pre-map-URL patch: verify passes, map URL off', r.code === 0 && /map URL off/.test(r.out), r.out);
+    r = run(['apply', '--target', e1234, '--panel', 'high', '--yes']);
+    ok('pre-map-URL patch: the Patch button adds the map URL edit only', r.code === 0 && /map URL -> /.test(r.out) && !/variant ->|self-start ->|resolution ->/.test(r.out), r.out);
+    var d1234 = diffs(b1234, fs.readFileSync(e1234));
+    ok('pre-map-URL patch: the Patch button changed only the map URL ranges', d1234.length >= 1 && d1234.every(inMapUrl) && mapUrlIs(fs.readFileSync(e1234), 2),
+        JSON.stringify(d1234.map(function (x){return '0x'+x.toString(16);})));
+    r = run(['revert', '--target', e1234, '--yes']);
+    ok('pre-map-URL patch: revert restores byte-exact stock', r.code === 0 && sha256(e1234) === ORIG_SHA, r.out);
+
+    /* One map URL range patched and the other stock (a write of ours cut
+     * short): unrecognised, as a located site that reads as neither; apply
+     * refuses it and revert writes the whole backup. */
+    var half = Buffer.from(SRCBUF);
+    Buffer.from(MAPURL[1][2], 'hex').copy(half, MAPURL[1][0]);
+    fs.writeFileSync(e1234, half);
+    r = run(['status', '--target', e1234]);
+    ok('half a map URL edit: not known, restorable', /^mapurl:\s+UNKNOWN \(map URL: partly patched\)$/m.test(r.out) &&
+        /known:\s+NO — map URL: partly patched/.test(r.out) && /^restorable:\s+yes$/m.test(r.out), r.out);
+    r = run(['apply', '--target', e1234, '--panel', 'high', '--yes']);
+    ok('half a map URL edit: apply refuses, no write', r.code !== 0 && /refusing: map URL: partly patched/.test(r.out) && fs.readFileSync(e1234).equals(half), r.out);
+    r = run(['verify', '--target', e1234]);
+    ok('half a map URL edit: verify fails', r.code !== 0 && /map URL: partly patched/.test(r.out), r.out);
+    r = run(['revert', '--target', e1234, '--yes']);
+    ok('half a map URL edit: revert writes the whole backup', r.code === 0 && sha256(e1234) === ORIG_SHA, r.out);
+
+    /* Another tool's bytes in the log string (neither stock nor ours): the
+     * edit is left alone, the other edits apply and revert as ever, and
+     * those bytes stay. */
+    var foreign = Buffer.from(SRCBUF);
+    foreign[MAPURL[0][0] + 4] ^= 0x20;
+    fs.writeFileSync(e1234, foreign);
+    r = run(['status', '--target', e1234]);
+    ok('foreign map URL bytes: NOT APPLIED, the build still known', /^mapurl:\s+NOT APPLIED \(map URL: log string not found\)$/m.test(r.out) &&
+        /known:\s+yes, modified build/.test(r.out), r.out);
+    r = run(['apply', '--target', e1234, '--panel', 'high', '--yes']);
+    ok('foreign map URL bytes: the other edits apply, those bytes as found', r.code === 0 && /patched OK/.test(r.out) && !/map URL ->/.test(r.out) &&
+        JSON.stringify(mapUrlBytes(fs.readFileSync(e1234))) === JSON.stringify(mapUrlBytes(foreign)), r.out);
+    r = run(['verify', '--target', e1234]);
+    ok('foreign map URL bytes: verify passes, map URL n/a', r.code === 0 && /map URL n\/a/.test(r.out), r.out);
+    r = run(['revert', '--target', e1234, '--yes']);
+    ok('foreign map URL bytes: revert restores the other edits and keeps those bytes', r.code === 0 && fs.readFileSync(e1234).equals(foreign), r.out);
 
     /* Panel switch high -> mid restores the stock geometry, and a custom
      * --res lands in the immediates at the same physical size. */
@@ -407,6 +494,7 @@ try {
     var before = fs.statSync(SRC).mtime.getTime();
     r = run(['probe', SRC]);
     ok('probe: the documented sites, proven, patchable', r.code === 0 && /variant:\s+slot 0x2ba4f0 \(table 0x2ba4d4, 12 slots\): ORIGINAL/.test(r.out) &&
+        /^mapurl:\s+string 0x257838 \(55 bytes, log 0x88aa2\), initial URL 0x7b533 \(display builder 0x2078b0\): ORIGINAL/m.test(r.out) &&
         /sink:\s+slot 0x2a20b0 \(59 bytes\): ORIGINAL/.test(r.out) &&
         /selfstart:\s+call 0x18176c in onSuggestUi 0x1816f0 \(setStreamStatus 0x181560, requestStream 0x181810\): ORIGINAL/.test(r.out) &&
         /res:\s+immediates 0x20ca32 0x20ca54 0x20ca66 0x20ca74 \(builder 0x20ca30\): ORIGINAL/.test(r.out) &&
@@ -424,22 +512,22 @@ try {
     var ot = path.join(dir, 'carplay_other');
     fs.writeFileSync(ot, other);
     r = run(['status', '--target', ot]);
-    ok('unproven build: pristine by its stock sites, not proven, its version', /known:\s+yes, pristine build a2e62156/.test(r.out) &&
-        /proven:\s+no/.test(r.out) && /version:\s+22\.28\.3/.test(r.out), r.out);
+    ok('unproven build: pristine by its stock sites, not proven, its version, the map URL found', /known:\s+yes, pristine build a2e62156/.test(r.out) &&
+        /proven:\s+no/.test(r.out) && /version:\s+22\.28\.3/.test(r.out) && /^mapurl:\s+ORIGINAL/m.test(r.out), r.out);
     r = run(['apply', '--target', ot, '--panel', 'high', '--yes']);
     ok('unproven build: apply without --unproven refuses, no write, no backup', r.code !== 0 && /is not a proven build; pass --unproven/.test(r.out) &&
         fs.readFileSync(ot).equals(other) && !fs.existsSync(ot + '.woc-orig'), r.out);
     r = run(['apply', '--target', ot, '--panel', 'high', '--sink', 'udp://127.0.0.1:20557?mime_type=video/H264', '--unproven', '--yes']);
-    ok('unproven build: apply writes all four edits', r.code === 0 && /patched OK/.test(r.out) && /variant -> IC_HIGH/.test(r.out) &&
-        /self-start -> requestStream/.test(r.out) && /resolution -> 1088x480/.test(r.out), r.out);
+    ok('unproven build: apply writes every edit', r.code === 0 && /patched OK/.test(r.out) && /variant -> IC_HIGH/.test(r.out) &&
+        /self-start -> requestStream/.test(r.out) && /resolution -> 1088x480/.test(r.out) && /map URL -> /.test(r.out) && mapUrlIs(fs.readFileSync(ot), 2), r.out);
     var od = diffs(other, fs.readFileSync(ot));
     ok('unproven build: the diff stays in the edit regions', od.length > 0 && od.every(function (x) {
-        return (x >= SLOT && x < SLOT + 4) || (x >= SINK && x < SINK + SINK_LEN) || (x >= CALL && x < CALL + CALL_LEN) || inResRegion(x); }));
+        return (x >= SLOT && x < SLOT + 4) || (x >= SINK && x < SINK + SINK_LEN) || (x >= CALL && x < CALL + CALL_LEN) || inResRegion(x) || inMapUrl(x); }));
     r = run(['apply', '--target', ot, '--panel', 'mid', '--yes']);
     ok('unproven build: a later apply (our backup present) needs no --unproven', r.code === 0 && /variant -> IC_MID/.test(r.out), r.out);
     r = run(['apply', '--target', ot, '--panel', 'high', '--sink', 'udp://127.0.0.1:20557?mime_type=video/H264', '--yes']);
     r = run(['verify', '--target', ot]);
-    ok('unproven build: verify passes', r.code === 0 && /IC_HIGH, sink udp:\/\/127\.0\.0\.1:20557/.test(r.out), r.out);
+    ok('unproven build: verify passes, map URL on', r.code === 0 && /IC_HIGH, sink udp:\/\/127\.0\.0\.1:20557/.test(r.out) && /map URL on/.test(r.out), r.out);
     r = run(['revert', '--target', ot, '--yes']);
     ok('unproven build: revert restores it byte-exact', r.code === 0 && fs.readFileSync(ot).equals(other), r.out);
 
@@ -472,8 +560,16 @@ function codingAndRecord() {
         [ct, ct + '.woc-orig', ct + '.woc-orig.json', record.recordPath(ct)].forEach(function (f) { try { fs.unlinkSync(f); } catch (e) {} });
         fs.writeFileSync(ct, SRCBUF);
     }
-    function rec() { var x = record.current(ct); return x ? JSON.stringify({ patched: x.patched, proven: x.proven, trial: x.trial, healthy: x.healthy }) : 'none'; }
-    function want(o) { return JSON.stringify({ patched: o.patched, proven: o.proven, trial: o.trial, healthy: o.healthy }); }
+    function rec() { var x = record.current(ct); return x ? JSON.stringify({ patched: x.patched, proven: x.proven, trial: x.trial, healthy: x.healthy, mapurl: x.mapurl }) : 'none'; }
+    function want(o) { return JSON.stringify({ patched: o.patched, proven: o.proven, trial: o.trial, healthy: o.healthy, mapurl: o.mapurl }); }
+    /* The patch of an earlier release (no map URL edit) that ran healthy. */
+    function earlierHealthy() {
+        fresh();
+        run(['apply', '--target', ct, '--panel', 'high', '--yes']);
+        fs.writeFileSync(ct + '.tmp', withoutMapUrl(fs.readFileSync(ct)), { mode: 0o755 });
+        fs.renameSync(ct + '.tmp', ct);
+        record.write(ct, { patched: true, proven: true });
+    }
     try {
         fresh();
         r = run(['status', '--target', ct]);
@@ -518,9 +614,9 @@ function codingAndRecord() {
         r = run(['apply', '--target', ct, '--panel', 'mid', '--yes']);
         ok('record: and when an apply rewrites it', r.code === 0 && /patched OK/.test(r.out) && rec() === want({ patched: true, proven: true }), r.out + rec());
         r = run(['revert', '--target', ct, '--yes']);
-        ok('record: its revert remembers it ran healthy', r.code === 0 && sha256(ct) === ORIG_SHA && rec() === want({ patched: false, healthy: true }), r.out + rec());
+        ok('record: its revert remembers it ran healthy, with the map URL edit', r.code === 0 && sha256(ct) === ORIG_SHA && rec() === want({ patched: false, healthy: true, mapurl: true }), r.out + rec());
         r = run(['revert', '--target', ct, '--yes']);
-        ok('record: a revert with nothing to do keeps that', /already at the original/.test(r.out) && rec() === want({ patched: false, healthy: true }), r.out + rec());
+        ok('record: a revert with nothing to do keeps that', /already at the original/.test(r.out) && rec() === want({ patched: false, healthy: true, mapurl: true }), r.out + rec());
         r = run(['apply', '--target', ct, '--panel', 'high', '--yes']);
         ok('record: patched again, the same build is proven at once', r.code === 0 && rec() === want({ patched: true, proven: true }), r.out + rec());
         car.coding(9);
@@ -537,6 +633,25 @@ function codingAndRecord() {
         r = run(['apply', '--target', ct, '--panel', 'high', '--yes']);
         ok('record: an earlier release\'s proven record stays proven, not rewritten', /nothing to do/.test(r.out) && rec() === want({ patched: true, proven: true }) &&
             fs.statSync(record.recordPath(ct)).mtime.getTime() === m0, r.out + rec());
+
+        /* A healthy run of a patch without the map URL edit does not prove
+         * it: the apply that adds it is on trial, from the patch and from its
+         * revert's record alike, and an earlier release's revert record (no
+         * mapurl) counts as without it. */
+        earlierHealthy();
+        r = run(['apply', '--target', ct, '--panel', 'high', '--yes']);
+        ok('record: adding the map URL edit to a patch that ran healthy without it puts it on trial', r.code === 0 && /map URL -> /.test(r.out) &&
+            !/variant ->|resolution ->/.test(r.out) && rec() === want({ patched: true, proven: false, trial: true }), r.out + rec());
+        earlierHealthy();
+        r = run(['revert', '--target', ct, '--yes']);
+        ok('record: the revert of a healthy patch without the map URL edit says so', r.code === 0 && sha256(ct) === ORIG_SHA &&
+            rec() === want({ patched: false, healthy: true, mapurl: false }), r.out + rec());
+        r = run(['apply', '--target', ct, '--panel', 'high', '--yes']);
+        ok('record: patched again with the map URL edit, on trial', r.code === 0 && rec() === want({ patched: true, proven: false, trial: true }), r.out + rec());
+        r = run(['revert', '--target', ct, '--yes']);
+        record.write(ct, { patched: false, healthy: true });
+        r = run(['apply', '--target', ct, '--panel', 'high', '--yes']);
+        ok('record: an earlier release\'s revert record of a healthy patch: the map URL patch on trial', r.code === 0 && rec() === want({ patched: true, proven: false, trial: true }), r.out + rec());
 
         /* A patch on trial on a car whose coding then reads otherwise: the
          * Patch button's apply ends the trial. */

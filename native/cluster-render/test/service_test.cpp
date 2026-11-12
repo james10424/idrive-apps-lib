@@ -1605,6 +1605,14 @@ int main()
     rawm.send("{\"op\":\"animate\",\"ref\":1,\"anim\":1,\"part\":1,\"property\":\"rotate\",\"keys\":\"0:1,2\"}");
     rawm.send("{\"op\":\"uniform\",\"ref\":1,\"part\":1,\"name\":\"u_m\",\"type\":\"mat4\",\"v\":\"1 2 3\"}");
     rawm.send("{\"op\":\"asset\",\"ref\":2,\"target\":\"panel\",\"w\":4096,\"h\":4}");
+    rawm.send("{\"op\":\"asset\",\"ref\":3,\"target\":\"panel\",\"format\":\"etc2rgba\",\"w\":250,\"h\":280}");
+    rawm.send("{\"op\":\"asset\",\"ref\":4,\"target\":\"panel\",\"format\":\"etc2rgba\",\"w\":8,\"h\":8}");
+    {
+        const std::string blk(16, '\x55');
+        rawm.send_message(cr::frame_head(4, 1, {cr::FrameRect{0, 0, 4, 4}}, blk.size()) + blk);
+        const std::string four(64, '\x55');
+        rawm.send_message(cr::frame_head(4, 2, {}, four.size()) + four);
+    }
     rawm.send("{\"op\":\"status\"}");
     r.pump(100);
     const std::string said = rawm.events();
@@ -1621,7 +1629,23 @@ int main()
        said.find("keys are t:v") != std::string::npos && said.find("3 values") != std::string::npos);
     ok("a uniform of part elements is refused", said.find("whole elements") != std::string::npos);
     ok("an asset too big is refused", said.find("w must be a number from 1 to 2048") != std::string::npos);
+    ok("an etc2rgba asset not of 4x4 blocks is refused", said.find("multiples of 4") != std::string::npos);
+    ok("its frames have no rects", said.find("sent whole, with no rects") != std::string::npos);
+    ok("whole, it is taken, and status names it",
+       said.find("sent once") == std::string::npos && said.find("etc2rgba 8x8") != std::string::npos);
     ok("and the service still answers", said.find("\"ev\":\"status\"") != std::string::npos);
+    {
+        Rig r8;
+        r8.sc.backend = "id8";
+        r8.svc.reset();
+        r8.start();
+        Raw raw8(r8.path);
+        raw8.send("{\"op\":\"hello\",\"app\":\"etc2\"}");
+        raw8.send("{\"op\":\"asset\",\"ref\":1,\"target\":\"panel\",\"format\":\"etc2rgba\",\"w\":8,\"h\":8}");
+        r8.pump(50);
+        const std::string said8 = raw8.events();
+        ok("iDrive 8 takes etc2rgba too", said8.find("\"ev\":\"error\"") == std::string::npos);
+    }
 
     {
         /* The shared cap, steered by the governor, reaches every client. */

@@ -342,12 +342,15 @@ class ClusterRender extends EventEmitter {
             l.ih = o.ih;
             l.bpp = 4;
         } else if (kind === 'asset') {
-            l.bpp = o.format === 'r8' ? 1 : 4;
+            /* etc2rgba: 16 bytes a 4x4 block (1 a pixel), sent whole. */
+            l.compressed = o.format === 'etc2rgba';
+            l.bpp = o.format === 'r8' || l.compressed ? 1 : 4;
             if (!(o.w > 0 && o.h > 0 && o.w <= 2048 && o.h <= 2048 && o.w * o.h * l.bpp <= 1920 * 720 * 4)) return 0;
+            if (l.compressed && (o.w % 4 || o.h % 4)) return 0;
             l.iw = o.w;
             l.ih = o.h;
         }
-        if (l.bpp) l.image = Buffer.alloc(l.iw * l.ih * l.bpp);
+        if (l.bpp) l.image = Buffer.alloc(l.compressed ? (l.iw / 4) * (l.ih / 4) * 16 : l.iw * l.ih * l.bpp);
         const ref = this.nextRef++;
         this.layers.set(ref, l);
         if (this.sock) this._send(this._layerMsg(ref, l));
@@ -365,7 +368,8 @@ class ClusterRender extends EventEmitter {
     image(opts) { return this._add('image', opts); }
     effect(opts) { return this._add('effect', opts); }
     mesh(opts) { return this._add('mesh', opts); }
-    /* opts: target, format ('rgba8', 'r8'), w, h (up to 2048), sampling
+    /* opts: target, format ('rgba8', 'r8'; 'etc2rgba', w and h
+     * multiples of 4, its blocks sent whole), w, h (up to 2048), sampling
      * ('nearest', 'bilinear'), wrap ('clamp', 'repeat'). */
     asset(opts) { return this._add('asset', opts); }
     /* A scene file as the target's scene (PROTOCOL.md "Scene files"): opts
@@ -552,6 +556,7 @@ class ClusterRender extends EventEmitter {
         const l = this.layers.get(ref);
         if (!l || !l.image) return false;
         const iw = l.iw, ih = l.ih, bpp = l.bpp;
+        if (l.compressed && rects && rects.length) return false;
         if (!rects || !rects.length) {
             if (px.length !== l.image.length) return false;
             px.copy(l.image);

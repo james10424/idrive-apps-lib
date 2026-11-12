@@ -197,7 +197,7 @@ function nsmShutdown(w, boot, states, crash, up) {
     if (crash) fs.writeFileSync(info, '<restartInfo/>\n'); else try { fs.unlinkSync(info); } catch (e) {}
     const r = cp.spawnSync('sh', [MARK_SH], { env: Object.assign({}, process.env, { WOC_STATE_DIR: path.join(d, 'var'), WOC_BOOT_ID: path.join(d, 'boot_id'),
         WOC_SYSTEMCTL: path.join(d, 'systemctl'), WOC_MARK_WAIT: '2', WOC_SIN_DIR: path.join(d, 'sin'), WOC_UPTIME: path.join(d, 'uptime'),
-        WOC_PROC_STAT: path.join(d, 'stat') }) });
+        WOC_PROC_STAT: path.join(d, 'stat') }), stdio: 'ignore' });
     assert.strictEqual(r.status, 0);
     /* recmgr deletes its restart record when it starts at the next boot. */
     try { fs.unlinkSync(info); } catch (e) {}
@@ -1479,7 +1479,7 @@ function runMark(show, opts) {
     });
     const t0 = Date.now();
     const r = cp.spawnSync('sh', [MARK_SH], { env: Object.assign({}, process.env, { WOC_STATE_DIR: state, WOC_BOOT_ID: path.join(dir, 'boot_id'),
-        WOC_SYSTEMCTL: sc, WOC_MARK_WAIT: '1', WOC_SIN_DIR: sin, WOC_UPTIME: path.join(dir, 'uptime'), WOC_PROC_STAT: path.join(dir, 'stat') }) });
+        WOC_SYSTEMCTL: sc, WOC_MARK_WAIT: '1', WOC_SIN_DIR: sin, WOC_UPTIME: path.join(dir, 'uptime'), WOC_PROC_STAT: path.join(dir, 'stat') }), stdio: 'ignore' });
     const read = (f) => { try { return fs.readFileSync(path.join(state, f), 'utf8'); } catch (e) { return null; } };
     if (opts.ms) opts.ms.v = Date.now() - t0;
     return { status: r.status, mark: read('shutdown'), aa: read('shutdown-aapd') };

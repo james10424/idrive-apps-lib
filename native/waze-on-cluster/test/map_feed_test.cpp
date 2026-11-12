@@ -288,6 +288,14 @@ static void guide_hold()
     unlink(path.c_str());
 }
 
+/* The HUD's worker is still scaling a frame: the feed then asks to be woken
+ * in kScaleWaitMs however much later it is asked, while a frame due in
+ * kScaleWaitMs asks for a millisecond less a millisecond later. */
+static bool hud_scaling(const MapFeeds &feeds, int64_t now)
+{
+    return feeds.wake_in_ms(now) == MapFeed::kScaleWaitMs && feeds.wake_in_ms(now + 1) == MapFeed::kScaleWaitMs;
+}
+
 /* The app's Off (MapFeeds on neither), as the app sends it: from the cluster
  * alone the cluster off; from both each off. Off releases the map's slot and
  * the turn box's hold, so the stock map and box show again, and the HUD's
@@ -325,13 +333,13 @@ static void show_off()
                 b.port.tick(b.now);
                 b.svc->after_poll(fds, first, b.now);
                 const bool pending = (feeds.cluster() && feeds.cluster()->wants_write()) || (feeds.hud_feed() && feeds.hud_feed()->wants_write());
-                const int64_t w = feeds.wake_in_ms(b.now);
-                if (w > 0 && w <= MapFeed::kScaleWaitMs)
+                const bool scaling = hud_scaling(feeds, b.now);
+                if (scaling)
                     usleep(1000);
                 feeds.poll(b.now);
                 for (int i = 0; i < 4; i++)
                     asked = asked || b.svc->slots().requested(i);
-                if (round > 0 && n <= 0 && !pending && w != MapFeed::kScaleWaitMs)
+                if (round > 0 && n <= 0 && !pending && !scaling)
                     break;
             }
         }
@@ -773,12 +781,12 @@ int main()
                 b.port.tick(b.now);
                 b.svc->after_poll(fds, first, b.now);
                 const bool pending = (feeds.cluster() && feeds.cluster()->wants_write()) || (feeds.hud_feed() && feeds.hud_feed()->wants_write());
-                const int64_t w = feeds.wake_in_ms(b.now);
-                if (w > 0 && w <= MapFeed::kScaleWaitMs)
-                    usleep(1000);   /* the HUD's worker scaling */
+                const bool scaling = hud_scaling(feeds, b.now);
+                if (scaling)
+                    usleep(1000);
                 feeds.poll(b.now);
                 hud_asked = hud_asked || b.svc->slots().requested(2);
-                if (round > 0 && n <= 0 && !pending && w != MapFeed::kScaleWaitMs)
+                if (round > 0 && n <= 0 && !pending && !scaling)
                     break;
             }
         }

@@ -215,7 +215,8 @@ int serve(Config cfg)
                      "(upload_kb_per_s in /var/opt/cluster-render/cluster-render.local.conf)", key, cfg.str(key).c_str());
     struct Range { const char *key; long lo, hi; } ranges[] = {
         {"dirty_threshold", 0, 64}, {"dirty_settle_ms", 0, 3600000}, {"tex_level_bits", 0, 3},
-        {"target_fps", 0, 60},      {"pan_blocks", 0, 1},            {"stall_ms", 1000, 600000},
+        {"target_fps", 0, 60},      {"picture_fps", 0, 60},          {"pan_blocks", 0, 1},
+        {"stall_ms", 1000, 600000},
         {"cluster", 0, 1},          {"hud", 0, 1},                   {"hud_fps", 1, 30},
         {"hud_width_pct", 0, 100},  {"hud_offset_x", -800, 800},     {"hud_offset_y", -800, 800},
         {"hud_scale_down", 0, 1},   {"hud_round_corners", 0, 1},     {"hud_black_background", 0, 1},
@@ -231,6 +232,21 @@ int serve(Config cfg)
     vc.tex_level_bits = (uint32_t)cfg.num("tex_level_bits");
     vc.gpu_copy = cfg.num("gpu_copy") == 1;
     vc.stall_ms = (int)cfg.num("stall_ms");
+    vc.picture_fps = (unsigned)cfg.num("picture_fps");
+    if (vc.picture_fps) {
+        /* At least as many pictures as the cluster, the HUD (the app turns it
+         * on at run time) and the freeze watch take. */
+        const struct { const char *key; unsigned fps; } floors[] = {
+            {"target_fps", (unsigned)cfg.num("target_fps")},
+            {"hud_fps", (unsigned)cfg.num("hud_fps")},
+            {"freeze_min_fps", cfg.num("freeze_ms") ? (unsigned)cfg.num("freeze_min_fps") : 0u}};
+        for (const auto &f : floors)
+            if (vc.picture_fps < f.fps) {
+                log_warn("picture_fps %u is below %s %u: %u instead", vc.picture_fps, f.key, f.fps, f.fps);
+                vc.picture_fps = f.fps;
+            }
+        log_info("waze: pictures at most %u a second (picture_fps); the frames between are decoded without one", vc.picture_fps);
+    }
     vc.freeze.ms = (unsigned)cfg.num("freeze_ms");
     vc.freeze.min_fps = (unsigned)cfg.num("freeze_min_fps");
     vc.freeze.blank_ms = (unsigned)cfg.num("blank_ms");
@@ -352,10 +368,15 @@ int serve(Config cfg)
             FrameTiming::Minute tm;
             uint64_t overflows = 0;
             if (producer.minute(now, &m, &sm, &bm, &tm, &overflows)) {
-                log_info("waze: %u frames decoded in the last minute, %u without a picture to catch up, %u changed, "
+                const unsigned paced = (unsigned)producer.take_paced();
+                char paced_text[48] = "";
+                if (vc.picture_fps)
+                    std::snprintf(paced_text, sizeof paced_text, ", %u without one for picture_fps", paced);
+                log_info("waze: %u frames decoded in the last minute, %u without a picture to catch up%s, %u changed, "
                          "%u corrupted; the last picture is %s; %u losses (%u packets), %llu dropped by the receive "
                          "queue; packets waited %.1f ms on average, %lld ms at most",
-                         m.frames + bm.skipped, bm.skipped, m.changed, sm.corrupted, m.blank ? "blank" : "not blank",
+                         m.frames + bm.skipped + paced, bm.skipped, paced_text, m.changed, sm.corrupted,
+                         m.blank ? "blank" : "not blank",
                          sm.losses, sm.lost, (unsigned long long)overflows, bm.wait_us.mean() / 1000.0,
                          (long long)(bm.wait_us.max / 1000));
                 log_info("waze: %s", FrameTiming::describe(tm).c_str());
@@ -502,6 +523,7 @@ void define_keys(Config *cfg)
     cfg->define("alt_screen_port", "6031");
     cfg->define("alt_screen_uid", "13002");
     cfg->define("target_fps", "30");
+    cfg->define("picture_fps", "0");
     cfg->define("pan_blocks", "1");
     cfg->define("tex_level_bits", "2");
     cfg->define("gpu_copy", "1");

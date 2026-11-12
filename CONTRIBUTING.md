@@ -1,5 +1,9 @@
 # Contributing
 
+A pull request description has `AI:` and `Tested:` fields, and
+`Human review:` when an AI agent wrote it (AGENTS.md, "Pull requests by
+AI agents").
+
 ## Versions
 
 Leave version numbers alone. The release gives each component it publishes

@@ -1332,17 +1332,17 @@ async function recoveryTests() {
     fs.chmodSync(path.join(md, 'systemctl'), 0o755);
     fs.mkdirSync(path.join(md, 'state'));
     var mr = cp.spawnSync('sh', [path.join(PATCH, 'shutdown_mark.sh')], { env: Object.assign({}, process.env, { WOC_STATE_DIR: path.join(md, 'state'),
-        WOC_BOOT_ID: path.join(md, 'boot_id'), WOC_SYSTEMCTL: path.join(md, 'systemctl'), WOC_MARK_WAIT: '2' }) });
+        WOC_BOOT_ID: path.join(md, 'boot_id'), WOC_SYSTEMCTL: path.join(md, 'systemctl'), WOC_MARK_WAIT: '2' }), stdio: 'ignore' });
     ok('shutdown mark: a SIGKILLed aapd is stopped, a SIGKILLed carplay (no drop-in) failed', mr.status === 0 &&
         /^B stopped up \d+\n$/.test(fs.readFileSync(path.join(md, 'state', 'shutdown-aapd'), 'utf8')) && /^B failed up \d+\n$/.test(fs.readFileSync(path.join(md, 'state', 'shutdown'), 'utf8')));
     fs.writeFileSync(path.join(md, 'systemctl'), '#!/bin/sh\nprintf "ActiveState=failed\\nResult=signal\\nExecMainCode=2\\nExecMainStatus=90\\n"\n');
     cp.spawnSync('sh', [path.join(PATCH, 'shutdown_mark.sh')], { env: Object.assign({}, process.env, { WOC_STATE_DIR: path.join(md, 'state'),
-        WOC_BOOT_ID: path.join(md, 'boot_id'), WOC_SYSTEMCTL: path.join(md, 'systemctl'), WOC_MARK_WAIT: '2' }) });
+        WOC_BOOT_ID: path.join(md, 'boot_id'), WOC_SYSTEMCTL: path.join(md, 'systemctl'), WOC_MARK_WAIT: '2' }), stdio: 'ignore' });
     ok('shutdown mark: another signal end of aapd is failed', /^B failed up \d+\n$/.test(fs.readFileSync(path.join(md, 'state', 'shutdown-aapd'), 'utf8')));
     fs.writeFileSync(path.join(md, 'state', 'shutdown-aapd'), 'B stopped\n');
     fs.writeFileSync(path.join(md, 'systemctl'), '#!/bin/sh\nprintf "ActiveState=failed\\nResult=oom-kill\\nExecMainCode=2\\nExecMainStatus=9\\n"\n');
     cp.spawnSync('sh', [path.join(PATCH, 'shutdown_mark.sh')], { env: Object.assign({}, process.env, { WOC_STATE_DIR: path.join(md, 'state'),
-        WOC_BOOT_ID: path.join(md, 'boot_id'), WOC_SYSTEMCTL: path.join(md, 'systemctl'), WOC_MARK_WAIT: '2' }) });
+        WOC_BOOT_ID: path.join(md, 'boot_id'), WOC_SYSTEMCTL: path.join(md, 'systemctl'), WOC_MARK_WAIT: '2' }), stdio: 'ignore' });
     ok('shutdown mark: an oom-killed aapd (status 9) is failed', /^B failed up \d+\n$/.test(fs.readFileSync(path.join(md, 'state', 'shutdown-aapd'), 'utf8')));
 
     ok('the units\' timeouts cover the restore bound', [/TimeoutStartSec=(\d+)/, /TimeoutStopSec=(\d+)/].every(function (re) {

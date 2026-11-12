@@ -7,8 +7,10 @@
  * bytes that release wrote. Nothing here holds BMW bytes; everything is
  * derived from the buffer passed in.
  *
- *   require('./carplay_mutations.js')(REF) -> { LOC, EXPECT, sites, CASES, oldRelease }
+ *   require('./carplay_mutations.js')(REF) -> { LOC, EXPECT, sites, CASES, MAP_CASES, oldRelease }
  *     CASES: [name, mutate(buf) -> buf' or nothing, allowed outcomes, expected sites]
+ *     MAP_CASES: [name, mutate(buf), allowed outcomes of the map URL edit,
+ *                 { slotPatched, leaPatched } expected when found]
  *     oldRelease(): [{ name, original, patched }]
  */
 'use strict';
@@ -282,6 +284,63 @@ var CASES = [
     }, ['refused']],
 ];
 
+/* ---- the map URL edit --------------------------------------------------- */
+
+var MAP = LOC.mapurl;
+if (!MAP.ok) throw new Error('map URL not located in the reference: ' + MAP.reason);
+/* The first RELA entry, from the section headers. */
+function firstRela(b) {
+    var shoff = b.readUInt32LE(0x28), n = b.readUInt16LE(0x3c);
+    for (var i = 0; i < n; i++) { var o = shoff + i * 64; if (b.readUInt32LE(o + 4) === 4) return b.readUInt32LE(o + 24); }
+    throw new Error('no .rela section');
+}
+/* The log block's je: in the log function, the je rel32 landing within 0x40
+ * bytes before the log string's lea. */
+var LOG_FN = func(MAP.log), LOG_JE = null, GATE_CMP = null;
+for (var q = LOG_FN.off; q + 6 <= LOG_FN.end; q++) {
+    if (REF[q] === 0x0f && REF[q + 1] === 0x84) { var t = q + 6 + REF.readInt32LE(q + 2); if (t <= MAP.log && MAP.log - t < 0x40) LOG_JE = { at: q, to: t }; }
+}
+callsIn(REF, LOG_FN).forEach(function (c) {
+    var g = func(c.to), i = g && REF.indexOf(Buffer.from('83fe010f96c0', 'hex'), g.off);
+    if (g && i >= 0 && i < g.end) GATE_CMP = i;
+});
+var URL_G = (vaOf(REF, MAP.lea + 14) + REF.readInt32LE(MAP.lea + 10)) >>> 0;
+if (!LOG_JE || GATE_CMP === null) throw new Error('map URL anchors not found in the reference');
+
+var MAP_CASES = [
+    ['the map URL edit written', function (b) {
+        Buffer.from(MAP.slotBytes, 'hex').copy(b, MAP.slot); Buffer.from(MAP.leaBytes, 'hex').copy(b, MAP.lea);
+    }, ['correct'], { slotPatched: true, leaPatched: true }],
+    ['only the initial URL\'s lea written', function (b) { Buffer.from(MAP.leaBytes, 'hex').copy(b, MAP.lea); }, ['correct'], { slotPatched: false, leaPatched: true }],
+    ['the log string duplicated', function (b) {
+        b[VICTIM.off] = 0; Buffer.from('Head-Unit does not support Alternate Displays feature.\0', 'latin1').copy(b, VICTIM.off + 1);
+    }, ['refused']],
+    ['the log string read a second time', function (b) {
+        var l = leasIn(REF, VICTIM2)[0]; setRel(b, l.at + 3, l.at + 7, MAP.slot);
+    }, ['refused']],
+    ['the gate says variant <= 2', function (b) { b[GATE_CMP + 2] = 2; }, ['refused']],
+    ['the log block on the gate\'s true branch (jne)', function (b) { b[LOG_JE.at + 1] = 0x85; }, ['refused']],
+    ['a jump into the log block from elsewhere', function (b) {
+        b[VICTIM.off] = 0xe9; setRel(b, VICTIM.off + 1, VICTIM.off + 5, LOG_JE.to);
+    }, ['refused']],
+    ['the initial URL global built a second time', function (b) {
+        REF.copy(b, VICTIM.off, MAP.lea, MAP.lea + 19);
+        setRel(b, VICTIM.off + 3, VICTIM.off + 7, offOf(REF, (vaOf(REF, MAP.lea + 7) + REF.readInt32LE(MAP.lea + 3)) >>> 0));
+        b.writeInt32LE((URL_G - vaOf(b, VICTIM.off + 14)) | 0, VICTIM.off + 10);
+    }, ['refused']],
+    ['the cluster display builder loads another global', function (b) {
+        for (var p = MAP.builder; p < MAP.builder + 0x400; p++) {
+            if ((b[p] & 0xfb) === 0x48 && b[p + 1] === 0x8d && (b[p + 2] & 0xc7) === 5 && ((vaOf(b, p + 7) + b.readInt32LE(p + 3)) >>> 0) === URL_G) {
+                b.writeInt32LE(b.readInt32LE(p + 3) + 0x400, p + 3); return;
+            }
+        }
+        throw new Error('the builder\'s lea not found');
+    }, ['refused']],
+    ['the initial URL built from another string', function (b) { setRel(b, MAP.lea + 3, MAP.lea + 7, MAP.slot + 4); }, ['refused']],
+    ['a data pointer into the log string', function (b) { b.writeUInt32LE(vaOf(b, MAP.slot) + 4, firstRela(b) + 16); b.writeUInt32LE(0, firstRela(b) + 20); }, ['refused']],
+    ['a dynamic relocation over the initial URL\'s lea', function (b) { b.writeUInt32LE(vaOf(b, MAP.lea), firstRela(b)); }, ['refused']],
+];
+
 /* ---- builds an older release patched ------------------------------------ */
 
 /* The edits that release wrote where its locator found the sites: the variant
@@ -321,5 +380,5 @@ function oldRelease() {
     });
 }
 
-return { LOC: LOC, EXPECT: EXPECT, sites: sites, CASES: CASES, oldRelease: oldRelease };
+return { LOC: LOC, EXPECT: EXPECT, sites: sites, CASES: CASES, MAP_CASES: MAP_CASES, oldRelease: oldRelease };
 };

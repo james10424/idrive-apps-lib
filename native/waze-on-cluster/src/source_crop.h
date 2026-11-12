@@ -106,6 +106,8 @@ public:
             exempt_ = false;
         return needs_other && !exempt_;
     }
+    /* What restart(needs_other) would return, without counting the picture. */
+    bool would_restart(bool needs_other) const { return needs_other && !exempt_; }
     /* True the first time a picture of this sequence is converted as is. */
     bool warn()
     {

@@ -18,7 +18,10 @@
  * the decoder took after it before it came out: none when each comes out as
  * it is decoded, none for a frame taken and never output, the lag of
  * pictures held for display order, and unknown when the library does not
- * carry the bitstream's TimeStamp. */
+ * carry the bitstream's TimeStamp. A frame decoded without a picture gets it
+ * late while its surface still holds it: once, the newest one's, cropped
+ * as any other, and none once a later frame came out, once the decoder may
+ * have taken its surface, or when its picture needs another VPP rect. */
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -99,23 +102,33 @@ struct Run {
         if (!dec.init("/dev/null", 1088, 480, level_bits, gpu_copy, &err, c))
             fprintf(stderr, "init: %s\n", err.c_str());
     }
+    Decoder::FrameSink sink()
+    {
+        return [this](const VideoFrame &f) {
+            expect(f.w == 1088 && f.h == 480, "every frame of the output size");
+            expect(!(f.same && f.atlas), "the same picture has no atlas");
+            held.push_back(f.held);
+            frames.push_back(f.atlas ? (*f.atlas)[0] : f.same ? 0 : -1);
+            if (!f.atlas)
+                return;
+            pictures.push_back((*f.atlas)[0]);
+            for (uint8_t b : *f.atlas)
+                whole = whole && b == (*f.atlas)[0];
+        };
+    }
     void feed(const char *sps, bool idr, uint8_t content, bool picture = true)
     {
         const std::string au = access_unit(sps, idr, content);
         std::string err;
-        dec.feed((const uint8_t *)au.data(), au.size(),
-                 [this](const VideoFrame &f) {
-                     expect(f.w == 1088 && f.h == 480, "every frame of the output size");
-                     expect(!(f.same && f.atlas), "the same picture has no atlas");
-                     held.push_back(f.held);
-                     frames.push_back(f.atlas ? (*f.atlas)[0] : f.same ? 0 : -1);
-                     if (!f.atlas)
-                         return;
-                     pictures.push_back((*f.atlas)[0]);
-                     for (uint8_t b : *f.atlas)
-                         whole = whole && b == (*f.atlas)[0];
-                 },
-                 &err, true, picture);
+        dec.feed((const uint8_t *)au.data(), au.size(), sink(), &err, true, picture);
+    }
+    /* picture_skipped through this run's sink. */
+    bool late()
+    {
+        std::string err;
+        const bool ok = dec.picture_skipped(sink(), &err);
+        expect(err.empty(), "a late picture without an error");
+        return ok;
     }
     /* A sequence: its SPS with an IDR, then n - 1 P frames. */
     void sequence(const char *size, int n, uint8_t first)
@@ -329,6 +342,71 @@ int main()
         expect(r.pictures == std::vector<uint8_t>({1, 2, 3}), "every picture");
         expect(count("init 1280x720") == 3, "the first start, the restart with GPU copy, and without");
     });
+    {
+        /* A frame decoded without a picture gets it late (picture_skipped)
+         * while nothing was decoded since: once, never after a later decode,
+         * and nothing when the last frame had its picture. */
+        Run r("");
+        r.feed(kCarPlay, true, 10);
+        expect(!r.late(), "late: nothing when the last frame had its picture");
+        r.feed(nullptr, false, 11, false);
+        expect(r.late(), "late: the skipped frame's picture");
+        expect(!r.late(), "late: only once");
+        r.feed(nullptr, false, 12, false);
+        r.feed(nullptr, false, 13);
+        expect(!r.late(), "late: nothing once a later frame was decoded");
+        r.feed(nullptr, false, 14, false);
+        r.feed(nullptr, false, 15, false);
+        expect(r.late(), "late: the newest of two skipped frames");
+        expect(r.pictures == std::vector<uint8_t>({10, 11, 13, 15}), "late: each picture the newest frame's");
+        expect(r.frames == std::vector<int>({10, -1, 11, -1, 13, -1, -1, 15}), "late: frames in order");
+    }
+    {
+        /* A sequence src_crop checks: the late picture is cropped as any
+         * other, without waiting for its decode again. */
+        Run r(kAndroidAutoCrop);
+        r.feed(kAndroidAuto, true, 20);
+        r.feed(nullptr, false, 21, false);
+        const int syncs = count("decode-sync");
+        expect(r.late(), "late: a sequence src_crop checks");
+        expect(count("decode-sync") == syncs, "late: its decode not waited for again");
+        expect(count("vpp 0,0,1280,564") == 2, "late: cropped");
+        expect(r.pictures == std::vector<uint8_t>({20, 21}), "late: the cropped sequence's pictures");
+    }
+    {
+        /* A picture that needs another VPP input rect gets no late picture
+         * (a restart starts at an access unit); the next frame's picture
+         * restarts the decoder. */
+        Run r(kAndroidAutoCrop);
+        r.feed(kAndroidAuto, true, 22);
+        fake_msdk::picture_size = "1088x480";
+        r.feed(nullptr, false, 23, false);
+        expect(!r.late(), "late: none for a picture that needs another rect");
+        expect(count("init 1280x720") == 1, "late: no restart outside an access unit");
+        fake_msdk::picture_size = "";
+    }
+    {
+        /* An access unit that outputs no frame leaves the skipped frame's
+         * surface alone when the decoder keeps it as a reference: its late
+         * picture still comes. Without that, the decoder may be handed the
+         * surface, and no late picture comes. */
+        fake_msdk::refs = 1;
+        Run r("");
+        r.feed(kCarPlay, true, 30);
+        r.feed(nullptr, false, 31, false);
+        fake_msdk::swallow = 32;
+        r.feed(nullptr, false, 32);
+        expect(r.late(), "late: after an access unit that output nothing");
+        expect(r.pictures == std::vector<uint8_t>({30, 31}), "late: the skipped frame's picture");
+        fake_msdk::refs = 0;
+        Run u("");
+        u.feed(kCarPlay, true, 33);
+        u.feed(nullptr, false, 34, false);
+        fake_msdk::swallow = 35;
+        u.feed(nullptr, false, 35);
+        expect(!u.late(), "late: none once its surface was handed to the decoder");
+        fake_msdk::swallow = 0;
+    }
     {
         Run r("");
         r.sequence(kAndroidAuto, 3, 90);

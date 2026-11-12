@@ -687,7 +687,7 @@ static void held_videos_together()
     const uint64_t f0 = g->flushes;
     r.run(100, 1);
     ok("two held videos with frame clocks apart rewrite together and the target flushes again",
-       g->flushes > f0 && g->visible().size() == 2);
+       g->flushes > f0 && g->visible().size() == 2 && !r.comp->composite(r.panel));
 }
 
 static void refusals_lower_the_cap()
@@ -878,7 +878,7 @@ static void limits()
 {
     CompositorLimits lim;
     lim.per_client = 2;
-    lim.videos = 1;
+    lim.client_videos = 1;
     Rig r(0, lim);
     std::string err;
     VideoParams vp;
@@ -1218,6 +1218,93 @@ static void republish_rebuilds()
     ok("the part's pose, uniform, bind and animation", fp.pose.r[1] == 30 && fp.uniforms.at("u_color")[0] == 1 &&
                                                           fp.textures.at("u_atlas") == abuf &&
                                                           g->playing(part).size() == 1);
+}
+
+/* An etc2rgba asset: w and h multiples of 4, sent whole once,
+ * an immutable texture each scene made from it, its real bytes charged; a
+ * texture the renderer refuses puts the layers sampling it in error. */
+static void compressed_assets()
+{
+    std::string err;
+    AssetParams ap;
+    ap.format = TexFormat::ETC2RGBA;
+    ap.w = 250;
+    ap.h = 280;
+    ok("etc2rgba: w and h are multiples of 4",
+       Asset::size_error(ap.format, 250, 280) && Asset::size_error(ap.format, 252, 278) &&
+           !Asset::size_error(ap.format, 252, 280));
+    ok("its bytes: 16 a 4x4 block", tex_bytes(TexFormat::ETC2RGBA, 252, 280) == 63u * 70u * 16u);
+    AssetParams big;
+    big.format = TexFormat::ETC2RGBA;
+    big.w = 2048;
+    big.h = 1024;
+    ok("a 2048x1024 atlas fits one frame message and takes 2 MiB of the pixel memory",
+       !Asset::size_error(big.format, big.w, big.h) && Asset::memory(big) == 2u << 20);
+    const size_t n = 63 * 70 * 16;
+    CompositorLimits lim;
+    lim.pixel_bytes = n + 1024;   /* its blocks, and room for an 8x8 image */
+    Rig r(0, lim);
+    ok("refused at add", !r.comp->add_asset(1, r.panel, ap, &err) && err.find("multiples of 4") != std::string::npos);
+    ap.w = 252;
+    const uint32_t a = r.comp->add_asset(1, r.panel, ap, &err);
+    AssetParams sq;
+    sq.w = sq.h = 16;   /* 2 KB charged, with its scratch */
+    ok("charged its real bytes, no scratch", a && !r.comp->add_asset(1, r.panel, sq, &err) &&
+                                                 err.find("pixel memory") != std::string::npos);
+    Asset *as = r.comp->asset(1, a);
+    std::vector<uint8_t> blocks(n);
+    for (size_t i = 0; i < n; i++)
+        blocks[i] = (uint8_t)(i * 7);
+    ok("a short upload is refused", !as->update({}, blocks.data(), n - 16, &err) && !as->have());
+    std::vector<uint8_t> four(4 * 4 * 4);
+    ok("rects are refused", !as->update({crk::PixelRect{0, 0, 4, 4}}, four.data(), four.size(), &err) &&
+                                err.find("no rects") != std::string::npos);
+    const uint32_t fx = r.comp->add_effect(1, r.panel, params(Klass::Overlay, R(0, 0, 252, 280)), "", kSample, 0,
+                                           r.now, &err);
+    ok("an effect layer samples it before it has pixels", r.comp->bind(1, fx, 0, "u_atlas", a, &err));
+    ok("whole: taken", as->update({}, blocks.data(), n, &err));
+    ok("once: sent again, refused", !as->update({}, blocks.data(), n, &err) && err.find("once") != std::string::npos);
+    r.step(10);
+    r.slots.on_shown(0x01000400, r.now);
+    r.run(50);
+    FakeGraph *g = r.g("panel");
+    int tbuf = 0;
+    for (const auto &kv : g ? g->shown.buffers : std::map<int, FakeBuffer>())
+        if (kv.second.f == TexFormat::ETC2RGBA)
+            tbuf = kv.first;
+    const FakeBuffer *tb = g ? buffer_of(g, tbuf) : nullptr;
+    ok("an immutable texture made from its blocks", tb && tb->w == 252 && tb->h == 280 && tb->px == blocks);
+    std::string why;
+    ok("the layer bound to it once made, and shown",
+       g && g->visible().size() == 1 && g->shown.quads[g->visible()[0]].textures["u_atlas"] == tbuf &&
+           r.comp->state(fx, &why) == LayerState::Shown);
+    r.slots.on_lost(0x01000400, "fetch removed", r.now);
+    r.step(10);
+    hud_borrows_scene(r);
+    r.run(5100);
+    r.run(50);
+    g = r.g("panel");
+    int again = 0;
+    for (const auto &kv : g ? g->shown.buffers : std::map<int, FakeBuffer>())
+        if (kv.second.f == TexFormat::ETC2RGBA && kv.second.px == blocks)
+            again = kv.first;
+    ok("a new scene: made again and bound", again && g->visible().size() == 1 &&
+                                                g->shown.quads[g->visible()[0]].textures["u_atlas"] == again);
+
+    Rig no;
+    no.gpu.refuse_textures = true;
+    const uint32_t b = no.comp->add_asset(1, no.panel, ap, &err);
+    no.comp->asset(1, b)->update({}, blocks.data(), n, &err);
+    const uint32_t fx2 = no.comp->add_effect(1, no.panel, params(Klass::Overlay, R(0, 0, 252, 280)), "", kSample, 0,
+                                             no.now, &err);
+    no.comp->bind(1, fx2, 0, "u_atlas", b, &err);
+    no.step(10);
+    no.slots.on_shown(0x01000400, no.now);
+    no.run(50);
+    ok("refused by the renderer: the asset says so",
+       no.comp->asset(1, b)->refused().find("refused") != std::string::npos);
+    ok("and the layer sampling it is in error, with why",
+       no.comp->state(fx2, &why) == LayerState::Error && why.find("etc2rgba") != std::string::npos);
 }
 
 static void transforms_and_uniforms()
@@ -1734,6 +1821,7 @@ int main()
     adaptive_budget();
     assets();
     republish_rebuilds();
+    compressed_assets();
     transforms_and_uniforms();
     meshes();
     pass_order();

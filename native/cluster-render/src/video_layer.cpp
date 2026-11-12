@@ -68,6 +68,138 @@ void VideoLayer::repeat(int64_t now_ms)
     front_ms_ = last_frame_ms_ = now_ms;
 }
 
+void VideoLayer::to_source()
+{
+    source_ = true;
+    /* The newest frame into front_, as attach() finds it. */
+    if (!front_pending_ && !planner_.quiet() && !held_n_ && shown_.size() == atlas_bytes_) {
+        front_.swap(shown_);
+        front_ms_ = shown_ms_;
+    }
+    repeated_ = front_stale_ = false;
+    front_pending_ = false;
+}
+
+void VideoLayer::direct()
+{
+    source_ = false;
+    repeated_ = false;
+    front_pending_ = front_.size() == atlas_bytes_ && front_ms_ >= 0;
+}
+
+uint8_t *VideoLayer::taken()
+{
+    if (shown_.size() != atlas_bytes_)
+        shown_.assign(atlas_bytes_, 0);
+    return shown_.data();
+}
+
+uint8_t *VideoLayer::canvas()
+{
+    if (front_.size() != atlas_bytes_) {
+        front_.assign(atlas_bytes_, 128);   /* black: Y 0, U and V neutral */
+        std::fill(front_.begin(), front_.begin() + (size_t)p_.w * p_.h, 0);
+    } else if (front_stale_) {
+        front_ = shown_;   /* once after each whole write */
+    }
+    front_stale_ = false;
+    return front_.data();
+}
+
+void VideoLayer::canvas_changed(int64_t now_ms)
+{
+    if (front_pending_)
+        superseded_++;
+    repeated_ = front_stale_ = false;
+    front_pending_ = true;
+    front_ms_ = last_frame_ms_ = now_ms;
+    have_ = true;
+}
+
+bool VideoLayer::due(int64_t now_ms)
+{
+    const bool uncover = uncovering();
+    return (clock_.due(now_ms) || parked_ || uncover) && (pacer_.ready(now_ms) || (force_ && uncover));
+}
+
+void VideoLayer::hide(const uint8_t *tiles)
+{
+    hiding_ = false;
+    shown_drawn_ = g_ && drawn_;
+    if (!tiles || no_hide_)
+        return;
+    hidden_.assign(tiles, tiles + planner_.tiles());
+    hiding_ = std::find(hidden_.begin(), hidden_.end(), 1) != hidden_.end();
+}
+
+void VideoLayer::occluded(const Coverage &cov, const Shown &s)
+{
+    shown_drawn_ = g_ && s.drawn;
+    if (!shown_drawn_ || cov.empty() || s.turned || no_hide_) {
+        hiding_ = false;
+        return;
+    }
+    hiding_ = hidden_tiles(cov, p_.w, p_.h, s.rect, &hidden_);
+}
+
+void VideoLayer::occlude(Coverage *cov, const Shown &s)
+{
+    /* Drawn at u_opacity, 0 until its first frame is written. */
+    if (g_ && s.drawn && opaque_ && s.opacity * s.fade >= 1.0f && !s.turned)
+        cov->add(box_of(s.rect));
+}
+
+bool VideoLayer::uncovering() const
+{
+    if (!held_n_ || !g_ || !shown_drawn_ || blocks_shown_)
+        return false;
+    if (!hiding_)
+        return true;
+    for (size_t i = 0; i < held_.size(); i++)
+        if (held_[i] && !hidden_[i])
+            return true;
+    return false;
+}
+
+bool VideoLayer::held_differ()
+{
+    const uint32_t T = crk::kTileSize, cols = (p_.w + T - 1) / T;
+    bool any = false;
+    for (size_t i = 0; i < held_.size(); i++) {
+        if (!held_[i] || (hiding_ && hidden_[i]))
+            continue;
+        const uint32_t x0 = (uint32_t)(i % cols) * T, y0 = (uint32_t)(i / cols) * T;
+        const uint32_t w = std::min(T, p_.w - x0), h = std::min(T, atlas_h_ - y0);
+        bool differs = false;
+        for (uint32_t y = y0; y < y0 + h && !differs; y++) {
+            const size_t off = (size_t)y * p_.w + x0;
+            differs = crk::max_abs_diff(&front_[off], &shown_[off], w) > p_.dirty_threshold;
+        }
+        if (differs) {
+            any = true;
+        } else {
+            held_[i] = 0;
+            held_n_--;
+        }
+    }
+    return any;
+}
+
+void VideoLayer::planned_hidden(bool whole)
+{
+    if (!held_n_ && !hiding_)
+        return;
+    held_n_ = 0;
+    if (whole || !hiding_) {
+        std::fill(held_.begin(), held_.end(), 0);
+        return;
+    }
+    for (size_t i = 0; i < held_.size(); i++) {
+        held_[i] = hidden_[i] ? held_plan_[i] : 0;
+        held_n_ += held_[i];
+    }
+}
+
 bool VideoLayer::ready(int64_t now_ms) const
 {
     return have_ && now_ms - last_frame_ms_ <= p_.stall_ms;
@@ -77,10 +209,10 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
 {
     g_ = g;
     /* The scene starts from the newest frame: one not yet written, the
-     * newest partly written (quiet tiles), or what the last scene's buffer
-     * held. The first stage() writes it whole, checked like any other
+     * newest partly written (quiet or held tiles), or what the last scene's
+     * buffer held. The first stage() writes it whole, checked like any other
      * write; a layer whose frames have stopped is not ready, so not drawn. */
-    if (!front_pending_ && !planner_.quiet() && shown_.size() == atlas_bytes_) {
+    if (!front_pending_ && !planner_.quiet() && !held_n_ && shown_.size() == atlas_bytes_) {
         front_.swap(shown_);
         front_ms_ = shown_ms_;
     }
@@ -89,6 +221,9 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
     shown_.assign(atlas_bytes_, 0);
     shown_ms_ = -1;
     planner_.reset();
+    held_.assign(planner_.tiles(), 0);
+    held_n_ = 0;
+    hiding_ = shown_drawn_ = false;
     buffer_stale_ = true;
     opaque_ = false;
     blocks_shown_ = parked_ = false;
@@ -96,20 +231,13 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
     refine_due_ms_ = -1;
     drawn_ = false;
 
-    const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
     atlas_buf_ = g->buffer(TexFormat::R8, p_.w, atlas_h_, Sampling::Bilinear);
-    atlas_quad_ = atlas_buf_ ? g->quad(atlas_effect_, params.rect) : 0;
-    bool good = atlas_quad_ && g->turn(atlas_quad_, params.turn()) && g->texture(atlas_quad_, "u_image", atlas_buf_) &&
-                g->uniform(atlas_quad_, "u_size", size, 2) && g->uniform(atlas_quad_, "u_opacity", &zero, 1) &&
-                g->show(atlas_quad_, false) && g->order(atlas_quad_, order_);
+    bool good = atlas_buf_ && make_atlas_quads(g);
     if (good && p_.pan_blocks) {
         const uint32_t bw = crk::block_texels_w(p_.w), bh = crk::block_texels_h(p_.h);
         for (int k = 0; k < 2 && good; k++)
             good = (block_buf_[k] = g->buffer(TexFormat::RGBA8, bw, bh, Sampling::Nearest)) != 0;
-        block_quad_ = good ? g->quad(block_effect_, params.rect) : 0;
-        good = block_quad_ && g->turn(block_quad_, params.turn()) && g->texture(block_quad_, "u_image", block_buf_[0]) &&
-               g->uniform(block_quad_, "u_size", size, 2) && g->uniform(block_quad_, "u_opacity", &zero, 1) &&
-               g->show(block_quad_, false) && g->order(block_quad_, order_ + 1);
+        good = good && make_block_quads(g);
         block_bank_ = 0;
     }
     if (!good) {
@@ -121,12 +249,35 @@ bool VideoLayer::attach(Graph *g, int64_t now_ms, std::string *err)
     return true;
 }
 
+bool VideoLayer::make_atlas_quads(Graph *g)
+{
+    const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
+    atlas_quad_ = g->quad(atlas_effect_, drawn_params().rect);
+    return atlas_quad_ && g->turn(atlas_quad_, drawn_params().turn()) && g->texture(atlas_quad_, "u_image", atlas_buf_) &&
+           g->uniform(atlas_quad_, "u_size", size, 2) && g->uniform(atlas_quad_, "u_opacity", &zero, 1) &&
+           g->show(atlas_quad_, false) && g->order(atlas_quad_, order_);
+}
+
+bool VideoLayer::make_block_quads(Graph *g)
+{
+    const float size[2] = {(float)p_.w, (float)p_.h}, zero = 0.0f;
+    block_quad_ = g->quad(block_effect_, drawn_params().rect);
+    return block_quad_ && g->turn(block_quad_, drawn_params().turn()) && g->texture(block_quad_, "u_image", block_buf_[0]) &&
+           g->uniform(block_quad_, "u_size", size, 2) && g->uniform(block_quad_, "u_opacity", &zero, 1) &&
+           g->show(block_quad_, false) && g->order(block_quad_, order_ + 1);
+}
+
+void VideoLayer::drop_quads()
+{
+    if (atlas_quad_) g_->drop_quad(atlas_quad_);
+    if (block_quad_) g_->drop_quad(block_quad_);
+}
+
 void VideoLayer::drop_objects()
 {
     if (!g_)
         return;
-    if (atlas_quad_) g_->drop_quad(atlas_quad_);
-    if (block_quad_) g_->drop_quad(block_quad_);
+    drop_quads();
     if (atlas_buf_) g_->drop_buffer(atlas_buf_);
     for (int k = 0; k < 2; k++)
         if (block_buf_[k]) g_->drop_buffer(block_buf_[k]);
@@ -141,6 +292,7 @@ void VideoLayer::detach(bool drop)
     if (blocks_shown_)
         front_pending_ = true;
     g_ = nullptr;
+    hiding_ = shown_drawn_ = forced_write_ = false;
     atlas_buf_ = atlas_quad_ = block_quad_ = 0;
     block_buf_[0] = block_buf_[1] = 0;
     blocks_shown_ = parked_ = false;
@@ -154,14 +306,24 @@ void VideoLayer::show_blocks(bool on)
     blocks_shown_ = on;
     if (!g_)
         return;
-    g_->show(atlas_quad_, drawn_ && !on);
+    show_quads(on);
+}
+
+void VideoLayer::show_quads(bool blocks)
+{
+    g_->show(atlas_quad_, drawn_ && !blocks);
     if (block_quad_)
-        g_->show(block_quad_, drawn_ && on);
+        g_->show(block_quad_, drawn_ && blocks);
+}
+
+bool VideoLayer::bank_quads(int buf)
+{
+    return g_->texture(block_quad_, "u_image", buf);
 }
 
 void VideoLayer::set_opacity()
 {
-    const float a = opaque_ ? params.opacity * fade_ : 0.0f;
+    const float a = opaque_ ? drawn_params().opacity * fade_ : 0.0f;
     g_->uniform(atlas_quad_, "u_opacity", &a, 1);
     if (block_quad_)
         g_->uniform(block_quad_, "u_opacity", &a, 1);
@@ -183,11 +345,11 @@ void VideoLayer::place()
 {
     if (!g_)
         return;
-    g_->place(atlas_quad_, params.rect);
-    g_->turn(atlas_quad_, params.turn());
+    g_->place(atlas_quad_, drawn_params().rect);
+    g_->turn(atlas_quad_, drawn_params().turn());
     if (block_quad_) {
-        g_->place(block_quad_, params.rect);
-        g_->turn(block_quad_, params.turn());
+        g_->place(block_quad_, drawn_params().rect);
+        g_->turn(block_quad_, drawn_params().turn());
     }
     set_opacity();
 }
@@ -203,11 +365,30 @@ Stage VideoLayer::stage(int64_t now_ms)
     const int64_t settle_ms = planner_.settle_due_ms();
     const bool settle = !front_pending_ && settle_ms >= 0 && now_ms >= settle_ms;
     const bool refine = blocks_shown_ && !front_pending_ && now_ms >= refine_due_ms_;
-    if (!(front_pending_ || settle || refine) || (!clock_.due(now_ms) && !parked_))
+    /* Held tiles no longer hidden go now, whatever the frame clock. */
+    const bool uncover = uncovering();
+    if (!(front_pending_ || settle || refine || uncover) || (!clock_.due(now_ms) && !parked_ && !uncover))
         return Stage::Idle;
-    if (!pacer_.ready(now_ms)) {
+    const bool paced = pacer_.ready(now_ms);
+    if (!paced && !(force_ && uncover)) {
         held_budget_++;
         return Stage::Idle;
+    }
+    /* A forced write (compositor.h) hides nothing. With packed blocks it is
+     * the newest frame packed, the atlas hidden until a write the budget
+     * allows brings it back exact; without, every changed tile, the held
+     * ones with it. */
+    forced_write_ = !paced;
+    if (forced_write_) {
+        /* Held tiles the newest frame no longer differs from past the
+         * threshold are as the planner leaves quiet ones: no write. */
+        if (!held_differ()) {
+            forced_write_ = false;
+            return Stage::Idle;
+        }
+        hiding_ = false;
+        if (p_.pan_blocks && !first_)
+            return stage_blocks(now_ms, front_pending_);
     }
     return stage_exact(now_ms, front_pending_);
 }
@@ -224,7 +405,9 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
     /* A repeat of the picture last staged: its plan would find what that
      * picture's found, nothing to write, unless tiles are due to settle. */
     const int64_t settle_ms = planner_.settle_due_ms();
-    if (fresh && repeated_ && (blocks_shown_ || (opaque_ && !buffer_stale_ && (settle_ms < 0 || now_ms < settle_ms)))) {
+    const bool uncover = uncovering();
+    if (fresh && repeated_ && !uncover &&
+        (blocks_shown_ || (opaque_ && !buffer_stale_ && (settle_ms < 0 || now_ms < settle_ms)))) {
         repeated_ = false;
         ((blocks_shown_ ? motion_.quiet() : planner_.quiet()) ? quiet_ : same_)++;
         if (!blocks_shown_)
@@ -242,8 +425,15 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
         }
     }
     const bool refine = blocks_shown_;
-    const UploadPlan p = planner_.plan(shown_.data(), front_.data(), now_ms);
+    const uint8_t *hidden = hiding_ ? hidden_.data() : nullptr;
+    if (hidden)
+        held_plan_.assign(planner_.tiles(), 0);
+    const UploadPlan p = planner_.plan(shown_.data(), front_.data(), now_ms, hidden, hidden ? held_plan_.data() : nullptr);
+    hidden_tiles_ += p.hidden_tiles;
     if (p.rects.empty() && opaque_ && !refine && !buffer_stale_) {
+        planned_hidden(false);
+        if (uncover)
+            uncovers_++;
         if (fresh)
             (p.quiet_tiles ? quiet_ : same_)++;
         shown_ms_ = front_ms_;   /* the buffer is front_ to within the threshold */
@@ -256,6 +446,13 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
     const size_t raw = whole ? front_.size() : p.bytes;
     if (fresh && !first_ && p_.pan_blocks && raw > packed_.size() && pacer_.allowance() < (int64_t)raw) {
         planner_.reset();   /* the atlas is not written: no tile of it is left quiet */
+        /* Nor are the held ones written: they stay held, with the hidden
+         * tiles this plan found changed. */
+        for (size_t i = 0; hidden && i < held_.size(); i++)
+            if (hidden_[i] && held_plan_[i] && !held_[i]) {
+                held_[i] = 1;
+                held_n_++;
+            }
         return stage_blocks(now_ms, fresh);
     }
     settled_ += p.settled_tiles;
@@ -276,6 +473,12 @@ Stage VideoLayer::stage_exact(int64_t now_ms, bool fresh)
         refused_++;
         return Stage::Failed;
     }
+    /* A failed flush makes the next write whole, and until it goes the
+     * target holds or the packed quad shows: the held tiles can be taken as
+     * written now. */
+    planned_hidden(whole);
+    if (uncover)
+        uncovers_++;
     if (!opaque_) {
         opaque_ = true;   /* undone in committed() if the flush fails */
         set_opacity();
@@ -303,7 +506,7 @@ Stage VideoLayer::stage_blocks(int64_t, bool fresh)
     if (!written)
         refused_++;
     if (written)
-        written = g_->texture(block_quad_, "u_image", block_buf_[staged_.next_bank]);
+        written = bank_quads(block_buf_[staged_.next_bank]);
     if (!written)
         return Stage::Failed;
     if (!opaque_) {
@@ -319,6 +522,19 @@ void VideoLayer::committed(bool ok, int64_t now_ms)
 {
     const Staged s = staged_;
     staged_ = Staged();
+    const bool forced = forced_write_;
+    forced_write_ = false;
+    if (s.kind != Kind::None && ok) {
+        /* After a forced write nothing is hidden until a write the budget
+         * allowed has gone: it started from a positive allowance, so the
+         * forced write's debt was repaid. */
+        if (forced) {
+            no_hide_ = true;
+            forced_++;
+        } else {
+            no_hide_ = false;
+        }
+    }
     if (s.kind == Kind::None)
         return;
     /* A failed update is retried with the newest frame: packed blocks at the
@@ -328,7 +544,7 @@ void VideoLayer::committed(bool ok, int64_t now_ms)
         failed_++;
         pacer_.spend(s.accepted);
         if (s.kind == Kind::Blocks) {
-            g_->texture(block_quad_, "u_image", block_buf_[block_bank_]);
+            bank_quads(block_buf_[block_bank_]);
             parked_ = s.was_parked;
             show_blocks(s.was_shown);
         } else {
@@ -410,18 +626,24 @@ WriteStats VideoLayer::write_stats() const
 
 std::string VideoLayer::stats() const
 {
-    char b[256];
+    char b[400];
     std::snprintf(b, sizeof b,
-                  "%llu sent, %llu unchanged, %llu within threshold, %llu superseded, %llu settled, %llu failed "
+                  "%s%llu sent, %llu unchanged, %llu within threshold, %llu superseded, %llu settled, %llu failed "
                   "(%llu refused), %llu KB, %llu whole, %llu partial, %llu rects, %llu packed, %llu back to exact, "
                   "%llu budget holds",
-                  (unsigned long long)sent_, (unsigned long long)same_, (unsigned long long)quiet_,
+                  source_ ? "drawn by the target's composite; " : "", (unsigned long long)sent_,
+                  (unsigned long long)same_, (unsigned long long)quiet_,
                   (unsigned long long)superseded_, (unsigned long long)settled_, (unsigned long long)failed_,
                   (unsigned long long)refused_, (unsigned long long)(bytes_ / 1024),
                   (unsigned long long)whole_writes_, (unsigned long long)partial_writes_, (unsigned long long)rects_,
                   (unsigned long long)packed_writes_, (unsigned long long)refines_,
                   (unsigned long long)held_budget_);
-    return b;
+    if (!hidden_tiles_)
+        return b;
+    char h[96];
+    std::snprintf(h, sizeof h, ", %llu tiles left hidden, %llu uncovered (%llu forced)",
+                  (unsigned long long)hidden_tiles_, (unsigned long long)uncovers_, (unsigned long long)forced_);
+    return std::string(b) + h;
 }
 
 }  // namespace crs
