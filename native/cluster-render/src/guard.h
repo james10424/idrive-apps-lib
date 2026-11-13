@@ -46,6 +46,9 @@ public:
     /* One strike against t's mapping, why = what it is blamed for; true
      * when it disables the mapping. */
     bool strike(const TargetSpec &t, const std::string &why);
+    /* A loss not struck against t's mapping (slots.h on_availability),
+     * logged with why. */
+    void excuse(const TargetSpec &t, const std::string &why) const;
     /* "guard: <mapping>: disabled, 2 strikes" lines; empty without strikes. */
     std::string status_text() const;
 

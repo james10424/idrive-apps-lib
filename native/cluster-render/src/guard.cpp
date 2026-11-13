@@ -109,6 +109,11 @@ bool Guard::strike(const TargetSpec &t, const std::string &why)
     return g.disabled;
 }
 
+void Guard::excuse(const TargetSpec &t, const std::string &why) const
+{
+    log_info("guard: %s: no strike: %s", key(t).c_str(), why.c_str());
+}
+
 std::string Guard::status_text() const
 {
     std::string s;
