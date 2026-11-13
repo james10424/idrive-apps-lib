@@ -1,7 +1,7 @@
 {
   "id": "cluster-render",
   "kind": "tool",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "title": "Cluster renderer",
   "description": "Draws every app's layers on the instrument cluster and the HUD, sharing the display slots and one upload budget",
   "mguHmi": ["ID7", "ID8"],
