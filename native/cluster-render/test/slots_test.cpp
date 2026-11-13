@@ -2314,6 +2314,130 @@ static void hud_guard()
        !both && r.m.status(r.hud).reason == "scene id in use by another target");
 }
 
+/* A KOMBI still booting drops Dcsm2 again right after it came back, while
+ * the HUD it was just asked for is acquiring (a G20, Nov 13 2026): no
+ * strike, logged. A crash after the HUD was shown, with the KOMBI up a long
+ * time or just back, is still one, and so is a loss right after the
+ * comeback from a loss that blamed a mapping (a mapping that crashes the
+ * KOMBI each time it is back). */
+struct ComebackRig : HudRig {
+    Guard g;
+    explicit ComebackRig(const std::string &path)
+    {
+        unlink(path.c_str());
+        g.load(path, "t", "boot-1");
+        m.set_guard(&g);
+        port.up = true;
+        m.on_availability(true, now);
+        show(map, kMapScene);
+        show(hud, kPanelScene);
+        pass(60000);   /* up a long time, no mapping event in the window */
+    }
+    void down() { port.up = false; m.on_availability(false, now); }
+    void up() { port.up = true; m.on_availability(true, now); }
+    /* Back after a while, until the HUD is asked for again (kSettleMs). */
+    bool back_until_hud_acquiring()
+    {
+        up();
+        for (int k = 0; k < 300 && m.status(hud).state != TargetState::Acquiring; k++)
+            pass(10);
+        return m.status(hud).state == TargetState::Acquiring;
+    }
+};
+
+static void guard_comeback()
+{
+    const std::string path = "/tmp/crs-slots-comeback-" + std::to_string(getpid()) + ".txt";
+    {
+        ComebackRig r(path);
+        r.down();
+        ok("comeback: Dcsm2 gone with nothing mapped in the window: no strike", r.g.status_text().empty());
+        r.pass(90000);
+        logged();
+        const bool acquiring = r.back_until_hud_acquiring();
+        r.pass(190);
+        r.down();   /* 1.2 s after it came back, 190 ms after the HUD's request */
+        const std::string log = logged();
+        ok("comeback: the KOMBI back, the HUD asked for and acquiring, Dcsm2 gone again: no strike, logged",
+           acquiring && r.g.status_text().empty() &&
+               log.find("guard: hud 0x323 0x1000400 0: no strike: the KOMBI came back 1") != std::string::npos);
+        r.pass(110);
+        r.back_until_hud_acquiring();
+        r.m.on_shown(kPanelScene, r.now);
+        r.pass(60000);
+        ok("comeback: the KOMBI stays up, the HUD shown", r.m.status(r.hud).state == TargetState::Shown &&
+                                                            r.g.status_text().empty());
+        /* A real crash hours later: the HUD mapped and shown, gone 0.4 s on. */
+        r.m.want(r.hud, false, false);
+        r.pass(5000);
+        r.show(r.hud, kPanelScene);
+        r.pass(400);
+        r.down();
+        ok("comeback: a crash 0.4 s after the HUD was shown, the KOMBI up a long time: a strike",
+           r.g.status_text() == "guard: hud 0x323 0x1000400 0: 1 strike\n");
+        r.pass(90000);
+        r.back_until_hud_acquiring();
+        r.pass(190);
+        r.down();
+        ok("comeback: gone again right after coming back from that crash, the HUD acquiring: struck, disabled",
+           r.g.status_text() == "guard: hud 0x323 0x1000400 0: disabled, 2 strikes\n" && r.m.disabled(r.hud));
+    }
+    {
+        ComebackRig r(path);
+        r.down();
+        r.pass(90000);
+        r.back_until_hud_acquiring();
+        r.m.on_shown(kPanelScene, r.now);
+        r.pass(1000);
+        r.down();
+        ok("comeback: a crash 1 s after the HUD was shown, 2 s after the KOMBI came back: a strike",
+           r.g.status_text() == "guard: hud 0x323 0x1000400 0: 1 strike\n");
+    }
+    {
+        ComebackRig r(path);
+        r.down();
+        r.pass(90000);
+        r.back_until_hud_acquiring();
+        r.pass(400);
+        r.down();
+        ok("comeback loop: the first loss right after a comeback, the HUD acquiring: excused",
+           r.g.status_text().empty());
+        r.pass(30000);
+        r.back_until_hud_acquiring();
+        r.pass(400);
+        r.down();
+        ok("comeback loop: the second in a row: a strike",
+           r.g.status_text() == "guard: hud 0x323 0x1000400 0: 1 strike\n");
+        r.pass(30000);
+        r.back_until_hud_acquiring();
+        r.pass(400);
+        r.down();
+        ok("comeback loop: the third: disabled",
+           r.g.status_text() == "guard: hud 0x323 0x1000400 0: disabled, 2 strikes\n" && r.m.disabled(r.hud));
+    }
+    {
+        ComebackRig r(path);
+        r.down();
+        r.pass(90000);
+        r.back_until_hud_acquiring();
+        r.pass(400);
+        r.down();
+        r.pass(30000);
+        r.back_until_hud_acquiring();
+        r.m.on_shown(kMapScene, r.now);
+        r.m.on_shown(kPanelScene, r.now);
+        r.pass(60000);   /* the KOMBI stays up */
+        r.down();        /* car off */
+        r.pass(90000);
+        r.back_until_hud_acquiring();
+        r.pass(400);
+        r.down();
+        ok("comeback: a hiccup excused, the KOMBI up a long time, another hiccup at a later start: excused too",
+           r.g.status_text().empty());
+    }
+    unlink(path.c_str());
+}
+
 /* The targets as cluster-render's main sets them on iDrive 7: the panel on
  * its own scene id, falling back to the HUD's (holds.h fallback_rules). */
 static const uint64_t kOwnPanelScene = 0x010004f8;
@@ -2989,6 +3113,7 @@ int main()
     guide_no_flapping();
     guide_auto_slot();
     hud_guard();
+    guard_comeback();
     panel_hud_map_together();
     panel_falls_back_on_refusal();
     panel_falls_back_on_strikes();

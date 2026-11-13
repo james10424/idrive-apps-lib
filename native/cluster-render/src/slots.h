@@ -378,6 +378,7 @@ public:
     void follow(int64_t now_ms);
     static const int kHoldLosses = 3;
     static const int64_t kNoMapping = INT64_MIN / 2;
+    static const int64_t kComebackMs = 5000;   /* on_availability */
     static const int64_t kHoldLossMs = 60000;
 
     /* The display's answers and reports. */
@@ -393,7 +394,15 @@ public:
      * a strike against it too, and a hold the display refuses for its slot
      * (Refusal::NoSlot) is a strike and is not asked for again while the
      * service runs. A target whose mapping is disabled is never wanted,
-     * unless it has a fallback scene id (Fallback). */
+     * unless it has a fallback scene id (Fallback).
+     * A loss within kComebackMs of the display service coming back, when
+     * the loss before that comeback blamed no mapping (the KOMBI went away
+     * on its own) and the target to blame is still Acquiring (asked for,
+     * never shown), is excused instead: no strike, logged, the event not
+     * struck again. A KOMBI still booting drops Dcsm2 again (1.2 s after it
+     * came back, on a car). A loss that blamed a mapping, struck or
+     * excused, excuses none at the next comeback, so a mapping that crashes
+     * the KOMBI each time it is back is struck from its second crash on. */
     void on_availability(bool up, int64_t now_ms);
     void set_guard(Guard *g);
     std::string guard_text() const;
@@ -634,6 +643,9 @@ private:
     std::map<uint64_t, int64_t> disabled_;
     uint64_t slots_seq_ = 0;   /* table reports so far */
     int64_t available_since_ms_ = -1;
+    /* The display service's last loss blamed a mapping, struck or excused
+     * (on_availability). */
+    bool blamed_loss_ = false;
     int64_t slot_poll_ms_ = 0;
     std::map<uint64_t, int64_t> released_;   /* scene id -> its release not yet followed by a request */
     std::map<uint64_t, Subscribers> subs_;   /* by published scene id */

@@ -680,6 +680,8 @@ void SlotManager::on_availability(bool up, int64_t now_ms)
         available_since_ms_ = now_ms;
         return;
     }
+    /* How long the display service had been back; -1: already gone. */
+    const int64_t back_ms = available_since_ms_ >= 0 ? now_ms - available_since_ms_ : -1;
     available_since_ms_ = -1;
     released_.clear();
     /* A cluster restart takes the display service with it: a mapping the
@@ -692,7 +694,20 @@ void SlotManager::on_availability(bool up, int64_t now_ms)
             (last < 0 || (hold && !last_hold) || (hold == last_hold && t_[i].mapped_seq > t_[last].mapped_seq)))
             last = (int)i;
     }
-    if (guard_ && last >= 0) {
+    /* The KOMBI went away on its own before this comeback (the loss then
+     * blamed no mapping), and is gone again while still settling. */
+    const bool hiccup = back_ms >= 0 && back_ms < kComebackMs && !blamed_loss_;
+    if (last >= 0)
+        blamed_loss_ = true;
+    else if (back_ms >= 0)
+        blamed_loss_ = false;   /* not a repeated notice of the same loss */
+    if (guard_ && last >= 0 && hiccup && t_[last].status.state == TargetState::Acquiring) {
+        guard_->excuse(specs_[last], "the KOMBI came back " + std::to_string(back_ms) + " ms ago, " +
+                                         std::to_string(now_ms - t_[last].mapped_ms) +
+                                         " ms after mapping it (target acquiring, never shown)");
+        t_[last].mapped_ms = kNoMapping;
+        t_[last].first_show = false;
+    } else if (guard_ && last >= 0) {
         t_[last].disabled = guard_->strike(
             specs_[last], std::to_string(now_ms - t_[last].mapped_ms) + " ms after mapping it (target " +
                               target_state_name(t_[last].status.state) + ")");

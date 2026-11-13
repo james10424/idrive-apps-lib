@@ -429,6 +429,19 @@ cluster is offered, and what differs is in "iDrive 8".
     link or the KOMBI's own arbitration, so they are no strike by
     themselves. A restart that does not follow a mapping event within the
     window (the KOMBI also restarts on its own) is no strike.
+  - A KOMBI still booting can drop Dcsm2 again right after it came back (a
+    G20: 1.2 s after, 190 ms after the HUD was asked for again). So the
+    display service going away within 5 s of coming back is excused,
+    logged (`guard: hud 0x323 0x10004f0 0: no strike: the KOMBI came back
+    1188 ms ago, …`), when the loss before that comeback blamed no mapping
+    (the KOMBI went away on its own: the car off and on, its own reboot)
+    and the target to blame is still acquiring (asked for, never shown).
+    The service asks for its targets 1 s after a comeback, so 5 s covers
+    that hiccup with room to spare. A loss that blamed a mapping, struck or
+    excused, excuses none at the next comeback, so a mapping that crashes
+    the KOMBI each time it is back is struck from its second crash on. A
+    loss after the target was shown is a strike as before (crashes on a car
+    came 0.4 to 2.8 s after a mapping was shown).
   - A hold giving up on faults alone (more than 3 losses within 60 s, none
     of them BMW's own content taking the slot or a move, above) is a strike
     too, which covers a KOMBI renderer that restarts with Dcsm2 staying up,
