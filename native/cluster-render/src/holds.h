@@ -36,14 +36,19 @@ struct HoldSettings {
 bool load_holds(const HoldSettings &cfg, const std::vector<uint64_t> &allowed, std::vector<TargetSpec> *targets,
                 std::string *warn);
 
-/* The HUD's slot and scene on iDrive 7 (README.md "The HUD"). */
-const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400;
+/* The HUD's slot and scene on iDrive 7 (README.md "The HUD"): kHudScene,
+ * upstream's, the panel's fallback id; kHudOwnScene, the map's, this fork's
+ * default: the HUD shows while the panel does (VERIFIED on a G20 M340i, Nov 8
+ * 2026, where the panel and a HUD on kHudScene never showed together), the
+ * map and the HUD taking turns instead. */
+const uint64_t kHudSlot = 0x323, kHudScene = 0x01000400, kHudOwnScene = 0x010004f0;
 
 /* The iDrive 7 HUD's rules for t, the hud target: only slot kHudSlot with
- * scene kHudScene, never
+ * scene kHudScene or kHudOwnScene, never
  * taking a slot from the stock HMI; then its layers write from the HUD's
  * share of the budget. False,
- * with *why, for any other slot or a take-over: the HUD is left out. */
+ * with *why, for any other slot or scene id or a take-over: the HUD is left
+ * out. */
 bool hud_rules(TargetSpec *t, std::string *why);
 
 /* The panel target t's rules (README.md "Scene ids"): its fallback scene

@@ -88,7 +88,10 @@ int main()
         ok("hud: slot 0x323 taken, with the HUD's share", hud_rules(&h, &err) && h.share);
         TargetSpec scene;
         scene.name = "hud"; scene.slot = 0x323; scene.scene_id = 0x010004f0;
-        ok("hud: another scene id (the map's) refused", !hud_rules(&scene, &err) && !scene.share);
+        ok("hud: its own scene id (the map's, this fork's default) taken", hud_rules(&scene, &err) && scene.share);
+        TargetSpec stray;
+        stray.name = "hud"; stray.slot = 0x323; stray.scene_id = 0x010004f1;
+        ok("hud: any other scene id refused", !hud_rules(&stray, &err) && !stray.share);
         TargetSpec other;
         other.name = "hud"; other.slot = 0x330; other.scene_id = 0x01000400;
         ok("hud: any other slot refused, nothing set", !hud_rules(&other, &err) && !other.share &&
@@ -133,8 +136,8 @@ int main()
         for (std::string id; std::getline(ss, id, ',');)
             shipped_allowed.push_back(std::strtoull(id.c_str(), nullptr, 0));
         p = panel(std::strtoull(shipped("panel_scene_id").c_str(), nullptr, 0));
-        ok("shipped: the panel on 0x10004f8, falling back to the HUD's 0x1000400, both allowed",
-           p.scene_id == 0x010004f8 && shipped("hud_scene_id") == "0x01000400" &&
+        ok("shipped: the panel on 0x10004f8, falling back to 0x1000400; the HUD on its own 0x10004f0 (this fork)",
+           p.scene_id == 0x010004f8 && shipped("hud_scene_id") == "0x010004f0" &&
                std::find(shipped_allowed.begin(), shipped_allowed.end(), 0x010004f8) != shipped_allowed.end() &&
                fallback_rules(&p, shipped("panel_fallback_scene_id"), shipped_allowed, &err) &&
                p.fallback_scene_id == 0x01000400);
