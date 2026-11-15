@@ -33,14 +33,38 @@ struct Rect {
 inline bool operator==(const Rect &a, const Rect &b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; }
 inline bool operator!=(const Rect &a, const Rect &b) { return !(a == b); }
 
-/* ETC2RGBA: ETC2 colour with EAC alpha, 16 bytes a 4x4 block
- * (GL_COMPRESSED_RGBA8_ETC2_EAC); an immutable_texture(), never a buffer(). */
-enum class TexFormat { R8, RGBA8, ETC2RGBA };
-/* Bytes of a w x h texture of format f (ETC2RGBA: w and h multiples of 4). */
+/* The compressed formats are an immutable_texture(), never a buffer():
+ * ETC2RGBA, ETC2 colour with EAC alpha, 16 bytes a 4x4 block
+ * (GL_COMPRESSED_RGBA8_ETC2_EAC); ETC2RGB, opaque ETC2 colour, 8 bytes a
+ * 4x4 block (GL_COMPRESSED_RGB8_ETC2).
+ *
+ * The renderers take both (VERIFIED, static): MGU's libramses 19 maps
+ * public ETextureFormat_ETC2RGB (10) / ETC2RGBA (11) to internal 14 / 15
+ * (table 0x6a1620), and the KOMBI's GL format switch (0x2e2130b) uploads
+ * them as GL_COMPRESSED_RGB8_ETC2 / GL_COMPRESSED_RGBA8_ETC2_EAC (cases
+ * 0x2e2188f / 0x2e218b9) with glCompressedTexSubImage2D (0x2e1d161).
+ * iDrive 8's libramses 27 maps public ETC2RGB (8) / ETC2RGBA (9) to internal
+ * 12 / 13 (table 0x68be80) and the library's renderer uploads them the same
+ * way (cases 0x526a30 / 0x526a10); iDrive 8's cluster firmware is not
+ * checked. Neither library checks the data's size for
+ * them (19: 0x123c00), so tex_bytes() must be exact. */
+enum class TexFormat { R8, RGBA8, ETC2RGBA, ETC2RGB };
+inline bool tex_compressed(TexFormat f) { return f == TexFormat::ETC2RGBA || f == TexFormat::ETC2RGB; }
+/* Its name in the protocol. */
+inline const char *tex_format_name(TexFormat f)
+{
+    switch (f) {
+    case TexFormat::R8: return "r8";
+    case TexFormat::ETC2RGBA: return "etc2rgba";
+    case TexFormat::ETC2RGB: return "etc2rgb";
+    default: return "rgba8";
+    }
+}
+/* Bytes of a w x h texture of format f (compressed: w and h multiples of 4). */
 inline size_t tex_bytes(TexFormat f, uint32_t w, uint32_t h)
 {
-    if (f == TexFormat::ETC2RGBA)
-        return (size_t)(w / 4) * (h / 4) * 16;
+    if (tex_compressed(f))
+        return (size_t)(w / 4) * (h / 4) * (f == TexFormat::ETC2RGB ? 8 : 16);
     return (size_t)w * h * (f == TexFormat::R8 ? 1 : 4);
 }
 enum class Sampling { Nearest, Bilinear };
@@ -131,7 +155,7 @@ public:
     virtual bool write(int buf, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint8_t *px) = 0;
     /* An immutable texture of n bytes (one mip level) and its sampler,
      * handled as a buffer (texture(), drop_buffer()) but never written.
-     * Only ETC2RGBA, only where the backend takes it: 0 otherwise. */
+     * Only a compressed format, only where the backend takes it: 0 otherwise. */
     virtual int immutable_texture(TexFormat, uint32_t, uint32_t, Sampling, Wrap, const uint8_t *, size_t) { return 0; }
     /* A quad over r drawn by effect, hidden until show(). Blended over what
      * is below (source alpha), no depth test. */
@@ -211,6 +235,17 @@ public:
     /* The data object called name: 1 to 4 values, as its type takes. */
     virtual bool data(const std::string &name, const std::vector<float> &v, std::string *why) = 0;
     virtual bool flush(uint64_t tag) = 0;
+    /* A Graph that draws in this scene, over the file (PROTOCOL.md "Layers
+     * over a scene file"): a camera and passes of its own, which never clear,
+     * at render orders from *order up, one a pass; null order: from one past
+     * the file's highest. Its flush() flushes this scene, edits included. It
+     * borrows the scene: it goes after this FileScene, never before. Null
+     * with *err where the backend draws nothing over a file. */
+    virtual std::unique_ptr<Graph> layers(const int32_t *, std::string *err)
+    {
+        *err = "this display draws no layers over scene files";
+        return nullptr;
+    }
 };
 
 /* The participant: effects (shared by every scene) and the scenes. */

@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze no painel",
-    "description": "Mostra o mapa do CarPlay ou do Android Auto no painel de instrumentos: um auxiliar com permissões root aplica os patches reversíveis de carplay e aapd onde cada um é compatível, e a captura, ativa desde a inicialização, decodifica o H.264 do mapa e o desenha pelo renderizador do painel sempre que o fluxo chega"
+    "description": "Executa em segundo plano o mapa do Waze no painel. É instalado com o app Waze no painel, de onde você o controla."
   },
   "robertn_waze_cluster": {
     "title": "Waze no painel",
-    "description": "Coloca o mapa do Waze do CarPlay no painel de instrumentos: ative o patch pelo HMI e o mapa acompanha o CarPlay"
+    "description": "Mostra o mapa do CarPlay ou do Android Auto no painel de instrumentos e, se você quiser, no HUD. Em carros compatíveis, liga sozinho depois de instalar e reiniciar a unidade principal."
   }
 }

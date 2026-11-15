@@ -144,6 +144,31 @@ struct SceneOptions {
     std::vector<std::string> res;      /* its resource files' */
     std::vector<std::string> sha256;   /* SHA-256 (hex) of the file, then of each resource file */
     bool contend = false;              /* retries a slot the stock HMI takes */
+    /* The target's layers drawn over the file (PROTOCOL.md "Layers over a
+     * scene file"): their passes from render order layers_order up when
+     * layers_order_set, else past the file's own. */
+    bool layers = false;
+    bool layers_order_set = false;
+    int layers_order = 0;
+};
+
+/* A scene showing another target's content (PROTOCOL.md "host"): in the
+ * scene's target at x, y, w, h, the part src_* of target's pixels; shown
+ * false: nowhere. As an event, also into: the hosting scene's target, empty
+ * once target is not hosted any more. */
+struct Host {
+    std::string target, into;
+    int x = 0, y = 0;
+    unsigned w = 0, h = 0;
+    int src_x = 0, src_y = 0;
+    unsigned src_w = 0, src_h = 0;   /* 0: the whole target */
+    bool shown = true;
+    bool operator==(const Host &o) const
+    {
+        return target == o.target && into == o.into && x == o.x && y == o.y && w == o.w && h == o.h &&
+               src_x == o.src_x && src_y == o.src_y && src_w == o.src_w && src_h == o.src_h && shown == o.shown;
+    }
+    bool operator!=(const Host &o) const { return !(*this == o); }
 };
 
 /* An animation the renderer plays by itself (PROTOCOL.md "animate"). */
@@ -188,6 +213,12 @@ public:
      * kept by their key (edit_key), each replacing the kept line of its
      * key, and sent again after a reconnect in the order last sent. */
     void edit(uint32_t ref, const std::string &lines);
+    /* The scene (made with layers) hosts h.target there (PROTOCOL.md
+     * "host"), its src_* part when src_w and src_h are set (all four go),
+     * else all of it. Kept by target and sent again after a reconnect,
+     * until the service refuses it or the scene is replaced; false, nothing
+     * sent, for a scene without layers or a host of its own target. */
+    bool host(uint32_t ref, const Host &h);
     /* Everything of lo but its target. */
     void set(uint32_t ref, const LayerOptions &lo);
     /* A mesh layer's camera and projection (orthographic or not as made). */
@@ -250,6 +281,11 @@ public:
     std::function<void(unsigned cap_kb, unsigned max_kb, const std::string &reason)> on_budget;
     /* The answer to request_status(): the service's status text. */
     std::function<void(const std::string &text)> on_status;
+    /* A target hosted, moved, shown, hidden or not hosted any more (h.into
+     * empty), from the service's host events; hosts holds the targets
+     * hosted now, by name (none while not connected). */
+    std::function<void(const Host &h)> on_host;
+    std::map<std::string, Host> hosts;
     void request_status();
     /* The service's hello: its backend ("id7", "id8") and targets ("map:1088x480,..."). */
     std::string backend, targets;
@@ -270,6 +306,7 @@ private:
         AssetOptions ao;
         SceneOptions so;
         std::map<std::string, std::pair<uint64_t, std::string>> edits;   /* a scene's: key -> (when, line) */
+        std::map<std::string, std::string> hosts;                          /* a scene's host messages, by target */
         bool cluster_time = false;
         unsigned w = 0, h = 0, bpp = 4;  /* an image's or asset's pixels */
         /* The last message of each, sent again after a reconnect. */

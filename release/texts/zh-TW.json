@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze 儀表板顯示",
-    "description": "在儀表板上顯示 CarPlay 或 Android Auto 地圖：root 輔助程式會在各自支援的情況下套用可還原的 carplay 與 aapd 修補，而開機即執行的擷取程式會解碼地圖的 H.264，並在串流傳入時透過儀表板繪製器繪製"
+    "description": "在背景執行 Waze 儀表板顯示的地圖。隨 Waze 儀表板顯示 App 一起安裝，並在 App 中控制。"
   },
   "robertn_waze_cluster": {
     "title": "Waze 儀表板顯示",
-    "description": "將 CarPlay 的 Waze 地圖顯示在儀表板上：從 HMI 啟用修補，地圖即會跟隨 CarPlay"
+    "description": "在儀表板上顯示 CarPlay 或 Android Auto 地圖，也可選擇顯示在 HUD 上。在支援的車輛上，安裝並重新啟動主機後自動開啟。"
   }
 }

@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze i instrumentpanelet",
-    "description": "Viser CarPlay- eller Android Auto-kartet i instrumentpanelet: en root-hjelper bruker de reversible carplay- og aapd-patchene der hver av dem støttes, og opptaket, som kjører fra oppstart, dekoder kartets H.264-video og tegner det via instrumentpanel-rendereren så lenge strømmen går"
+    "description": "Kjører kartet til Waze i instrumentpanelet i bakgrunnen. Installeres sammen med appen Waze i instrumentpanelet, som du styrer det fra."
   },
   "robertn_waze_cluster": {
     "title": "Waze i instrumentpanelet",
-    "description": "Viser CarPlay-Waze-kartet i instrumentpanelet: slå på patchen fra HMI-en, så følger kartet CarPlay"
+    "description": "Viser CarPlay- eller Android Auto-kartet i instrumentpanelet og, om du vil, på HUD. På støttede biler slår det seg på av seg selv etter installering og omstart av hovedenheten."
   }
 }

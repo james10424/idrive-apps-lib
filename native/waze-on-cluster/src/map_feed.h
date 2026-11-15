@@ -36,7 +36,19 @@
  * renderer starts, showing with the frames handed over a second, error when
  * the renderer refused the layer or stays unreachable. Showing, and idle
  * while the stream is live, carry the stream's own reason (stream_health.h:
- * the stream lost) when it has one, in place of kWaiting. */
+ * the stream lost) when it has one, in place of kWaiting.
+ *
+ * Hosted: while a scene on another target hosts the feed's target
+ * (cluster-render PROTOCOL.md "host"), the layer is there instead, where its
+ * part lands in the host's rect (host_crop), and nothing is on the feed's
+ * own target, so the renderer lets
+ * that slot go. Its frames are the part of the picture the host's src
+ * covers (host_crop), scaled on the head unit to at most the rect's size by
+ * the scaling worker, as the HUD's are: one decode, one upload, of that part
+ * only. Hidden by the host, there is no layer at all and nothing goes to the
+ * renderer; the newest picture is held, and goes first when shown again.
+ * The host ending, or the renderer going away, puts the layer back on the
+ * feed's own target. */
 #ifndef WOC_MAP_FEED_H
 #define WOC_MAP_FEED_H
 
@@ -88,15 +100,16 @@ struct FeedConfig {
  * the shared upload cap and why it is what it is, for the diagnostics. */
 struct FeedStatus {
     std::string state = "idle";   /* idle, starting, showing, frozen, error */
-    std::string target;
+    std::string target;           /* where the map is drawn: the host's target while hosted */
+    bool hosted = false;          /* inside another app's scene (MapFeed, "Hosted") */
     std::string page;
     std::string reason;
     bool stream_reason = false;   /* the reason is the stream's (MapFeed::status) */
     unsigned upload_cap_kb = 0;   /* 0 until the renderer reports it */
     std::string upload_reason;
     bool guide_hold = true;
-    bool guide_disabled = false;   /* cluster-render's guard keeps the turn box's hold off */
-    bool disabled = false;         /* cluster-render's guard keeps the target's mapping off */
+    bool guide_disabled = false;   /* cluster-render reports the turn box's hold disabled */
+    bool disabled = false;         /* cluster-render reports the target disabled */
     bool cluster = true;           /* the cluster setting (MapFeeds) */
     bool hud = false;              /* the HUD setting (MapFeeds) */
     std::string hud_state = "off";   /* off, disabled, or the HUD feed's state */
@@ -127,6 +140,8 @@ class MapFeed {
 public:
     /* The reason while the stream is live and its picture blank. */
     static const char *const kWaiting;
+    /* The reason while hosted and hidden by the host. */
+    static const char *const kHostHidden;
     /* How often poll() looks for the worker's frame while it scales. */
     static const int64_t kScaleWaitMs = 5;
 
@@ -152,8 +167,8 @@ public:
     /* The HUD map kept shown over the stock HMI's pop-ups or not
      * (FeedConfig::hud_keep_shown), at once. */
     void set_hud_keep_shown(bool keep);
-    /* A layer to take frames: made, and not disabled by cluster-render's
-     * guard. */
+    /* A layer to take frames: made, and not reported disabled by
+     * cluster-render. */
     bool takes_frames() const { return layer_ && !disabled(); }
     int fd() const { return client_.fd(); }
     bool wants_write() const { return client_.wants_write(); }
@@ -183,7 +198,7 @@ public:
     /* A copy of the newest picture into *out; false when this feed has none
      * at hand. */
     bool latest(std::vector<uint8_t> *out) const;
-    /* cluster-render's mapping guard keeps the target's mapping off. */
+    /* cluster-render reports the target disabled. */
     bool disabled() const;
     /* Frames scaled for this feed. */
     uint64_t scaled_frames() const { return worker_.frames(); }
@@ -203,6 +218,12 @@ public:
 
 private:
     void make_layer();
+    /* The host of the feed's target from now on (into empty: none): the
+     * layer made again where it goes, or none while hidden. */
+    void set_host(const cr::Host &h);
+    bool hosted() const { return !host_.into.empty(); }
+    /* The target the layer is on: the host's, or the feed's own. */
+    const std::string &drawn_target() const { return hosted() ? host_.into : cfg_.target; }
     /* A layer that scales: the scaled frame to the renderer, and the newest
      * frame to the worker once the frame rate allows (offer and poll). */
     void send_pending(int64_t now_ms);
@@ -221,6 +242,7 @@ private:
 
     FeedConfig cfg_;
     cr::Client client_;
+    cr::Host host_;   /* the feed's target's host, from the renderer's events */
     uint32_t layer_ = 0;
     cr::LayerOptions lo_;   /* the layer's options as last sent */
     bool show_due_ = false;   /* visible once the frame waiting has gone */

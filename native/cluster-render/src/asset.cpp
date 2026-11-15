@@ -21,8 +21,9 @@ const char *Asset::size_error(TexFormat f, uint32_t w, uint32_t h)
         return "an asset is at least 1x1";
     if (w > 2048 || h > 2048)
         return "an asset is at most 2048x2048";
-    if (f == TexFormat::ETC2RGBA && (w % 4 || h % 4))
-        return "an etc2rgba asset's w and h are multiples of 4";
+    if (tex_compressed(f) && (w % 4 || h % 4))
+        return f == TexFormat::ETC2RGB ? "an etc2rgb asset's w and h are multiples of 4"
+                                       : "an etc2rgba asset's w and h are multiples of 4";
     if (tex_bytes(f, w, h) + 64 > cr::kMaxMessage)
         return "an asset's pixels must fit one frame message (5,529,600 bytes)";
     return nullptr;
@@ -32,11 +33,11 @@ bool Asset::update(const std::vector<crk::PixelRect> &rects, const uint8_t *data
 {
     const uint32_t b = bpp();
     if (compressed() && !rects.empty()) {
-        *err = "an etc2rgba asset is sent whole, with no rects";
+        *err = std::string("an ") + tex_format_name(p_.format) + " asset is sent whole, with no rects";
         return false;
     }
     if (compressed() && have_) {
-        *err = "an etc2rgba asset is sent once";
+        *err = std::string("an ") + tex_format_name(p_.format) + " asset is sent once";
         return false;
     }
     if (rects.empty()) {
@@ -122,12 +123,13 @@ Stage Asset::stage(int64_t now_ms)
         if (!buf_) {
             buf_ = g_->immutable_texture(p_.format, p_.w, p_.h, p_.sampling, p_.wrap, px_.data(), px_.size());
             if (!buf_) {
-                refused_ = "the renderer refused its " + std::to_string(p_.w) + "x" + std::to_string(p_.h) +
-                           " etc2rgba texture";
+                refused_ = "the renderer refused its " + std::to_string(p_.w) + "x" + std::to_string(p_.h) + " " +
+                           tex_format_name(p_.format) + " texture";
                 log_error("asset %u: %s", id_, refused_.c_str());
                 return Stage::Idle;
             }
-            log_info("asset %u: %ux%u etc2rgba texture made, %zu bytes", id_, p_.w, p_.h, px_.size());
+            log_info("asset %u: %ux%u %s texture made, %zu bytes", id_, p_.w, p_.h, tex_format_name(p_.format),
+                     px_.size());
             staged_ = px_.size();
             pacer_.spend(staged_);
         }

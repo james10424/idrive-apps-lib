@@ -32,8 +32,11 @@ namespace woc {
 class AtlasScaler {
 public:
     /* Source w x h and destination dw x dh frames (all even, dw <= w,
-     * dh <= h); false if not. */
-    bool configure(uint32_t w, uint32_t h, uint32_t dw, uint32_t dh, unsigned level_bits);
+     * dh <= h); false if not. With crop_w: only the crop_w x crop_h part at
+     * crop_x, crop_y of the source (all even, inside it) is scaled, dw <=
+     * crop_w and dh <= crop_h (a part shown elsewhere: MapFeed's host). */
+    bool configure(uint32_t w, uint32_t h, uint32_t dw, uint32_t dh, unsigned level_bits, uint32_t crop_x = 0,
+                   uint32_t crop_y = 0, uint32_t crop_w = 0, uint32_t crop_h = 0);
     bool configured() const { return dw_ != 0; }
     size_t dst_bytes() const { return (size_t)dw_ * (dh_ + dh_ / 2); }
 
@@ -72,6 +75,7 @@ private:
     static void coverage(uint32_t r, std::vector<uint16_t> *cov);
 
     uint32_t w_ = 0, h_ = 0, dw_ = 0, dh_ = 0;
+    uint32_t crop_x_ = 0, crop_y_ = 0, crop_w_ = 0, crop_h_ = 0;   /* the part scaled; all of it without a crop */
     unsigned bits_ = 0;
     Axis yx_, yy_, cx_, cy_;
     std::vector<uint16_t> rows_;   /* the horizontal pass, scaled 256 */
@@ -83,16 +87,19 @@ private:
     std::vector<uint16_t> ycov_, ccov_;   /* corner coverage: Y at radius_, U and V at radius_ / 2 */
 };
 
-/* What a ScaleWorker makes of a frame: a w x h atlas scaled to dw x dh,
- * rounded to level_bits, with AtlasScaler's corners and background. */
+/* What a ScaleWorker makes of a frame: a w x h atlas (its crop_w x crop_h
+ * part at crop_x, crop_y with crop_w) scaled to dw x dh, rounded to
+ * level_bits, with AtlasScaler's corners and background. */
 struct ScaleShape {
     uint32_t w = 0, h = 0, dw = 0, dh = 0;
+    uint32_t crop_x = 0, crop_y = 0, crop_w = 0, crop_h = 0;
     unsigned level_bits = 0;
     uint32_t radius = 0;
     bool black = false;
     bool operator==(const ScaleShape &o) const
     {
-        return w == o.w && h == o.h && dw == o.dw && dh == o.dh && level_bits == o.level_bits && radius == o.radius &&
+        return w == o.w && h == o.h && dw == o.dw && dh == o.dh && crop_x == o.crop_x && crop_y == o.crop_y &&
+               crop_w == o.crop_w && crop_h == o.crop_h && level_bits == o.level_bits && radius == o.radius &&
                black == o.black;
     }
     bool operator!=(const ScaleShape &o) const { return !(*this == o); }

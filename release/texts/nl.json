@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze in instrumentpaneel",
-    "description": "Toont de CarPlay- of Android Auto-kaart op het instrumentpaneel: een roothelper past de omkeerbare carplay- en aapd-patches toe waar elk wordt ondersteund, en de opname, die vanaf het opstarten draait, decodeert de H.264-video van de kaart en tekent die via de instrumentpaneel-renderer zodra de stream loopt"
+    "description": "Laat de kaart van Waze in instrumentpaneel op de achtergrond draaien. Wordt geïnstalleerd met de app Waze in instrumentpaneel, waarmee je het bedient."
   },
   "robertn_waze_cluster": {
     "title": "Waze in instrumentpaneel",
-    "description": "Zet de CarPlay-Waze-kaart op het instrumentpaneel: schakel de patch in via de HMI en de kaart volgt CarPlay"
+    "description": "Toont de CarPlay- of Android Auto-kaart in het instrumentpaneel en, als je dat kiest, op de HUD. Op ondersteunde auto's gaat hij vanzelf aan na de installatie en een herstart van de headunit."
   }
 }

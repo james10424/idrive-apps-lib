@@ -41,8 +41,7 @@
  * - BMW's turn box (the layer's guide_hold): hidden by default, the hold of
  *   its slot following the map; the switch off releases it and the box
  *   shows, the map still showing; on again, held; off from the start,
- *   never held; the hold disabled by cluster-render's guard: never held,
- *   and the status says so;
+ *   never held; the status never says the hold is disabled;
  * - only what the renderer needs goes: a picture repeated (as the producer
  *   hands over a picture the same as the last) keeps a static map showing
  *   past stall_ms; nothing reaches the renderer while the layer is hidden,
@@ -54,13 +53,18 @@
  *   both layers, or the HUD alone, shown past stall_ms with no frame whole
  *   and none scaled, and moving again the HUD scales at most hud_fps while
  *   the cluster keeps its rate; a feed made beside the other starts from its
- *   picture; the HUD disabled by the guard;
+ *   picture;
  * - Off (neither), from the cluster alone and from both: the map's and the
  *   HUD's slots and the turn box's hold released, the stock map and box
  *   shown again, nothing asked of the renderer while off; the cluster, or
- *   both, again: the next frame shown, the hold back. */
+ *   both, again: the next frame shown, the hold back;
+ * - hosted by another app's scene (hosting): the map in its scene at the
+ *   host's rect with the host's part of the picture, its own slot released;
+ *   hidden by the host, no layer and nothing sent; shown again; the host
+ *   gone, back on its own target. */
 #include <poll.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -116,6 +120,7 @@ struct Rig {
     int64_t last_frame_ms = -1;
     FreezeWatch watch{FreezeConfig()};
     ChangeSampler sampler{1088, 480};
+    cr::Client *other = nullptr;   /* another app of the renderer, polled with the feed */
 
     /* w: watched (above); hold: with the guide hold of the turn box's slot
      * following the map, as cluster-render.conf ships it; guide_hold: the
@@ -129,7 +134,6 @@ struct Rig {
         p.name = "panel"; p.slot = 0x203; p.scene_id = 0x010004f8; p.width = 1920; p.height = 720; p.linger_ms = 3000;
         g.name = "guide_0x105"; g.slot = 0x105; g.scene_id = kGuide; g.width = g.height = 16; g.linger_ms = 0;
         g.take_over_stock = true; g.follows = "map"; g.take_over_contents = {kBox};
-        g.strike_limit = 2;
         u.name = "hud"; u.slot = 0x323; u.scene_id = 0x01000400; u.width = 800; u.height = 480; u.linger_ms = 3000;
         u.yield_slots = {0x322};   /* as cluster-render.conf ships it */
         u.yield_ms = 1500;
@@ -193,8 +197,10 @@ struct Rig {
                     port.tick(now);
                     svc->after_poll(fds, first, now);
                 }
-                const bool pending = feed->wants_write();
+                const bool pending = feed->wants_write() || (other && other->wants_write());
                 feed->poll(now);
+                if (other)
+                    other->poll(now);
                 if (round > 0 && n <= 0 && !pending)
                     break;
             }
@@ -274,18 +280,6 @@ static void guide_hold()
        off.st().state == "showing" && off.in_box_slot(kGuide) == -1 && off.in_box_slot(kBox) == 1);
     ok("turn box: the hold not disabled, the status says so", !h.st().guide_disabled);
 
-    const std::string path = "/tmp/woc-feed-guard-" + std::to_string(getpid()) + ".txt";
-    std::ofstream(path) << "version t\nboot b\nguide_0x105 0x105 0x10004f1 0 1 0 2\n";
-    Rig d(false, 6000, true);
-    d.sc.guard_path = path;
-    d.sc.version = "t";
-    d.sc.boot_id = "b";
-    d.start();
-    d.port.stock_map(0x105, kBox);
-    d.pump(3000, &f);
-    ok("turn box: the hold disabled by cluster-render's guard: never held, the status says so",
-       d.st().state == "showing" && d.st().guide_disabled && d.in_box_slot(kGuide) == -1 && d.in_box_slot(kBox) == 1);
-    unlink(path.c_str());
 }
 
 /* The HUD's worker is still scaling a frame: the feed then asks to be woken
@@ -459,10 +453,113 @@ static void only_what_is_needed()
     ok("another target: repeats alone bring the picture", r.st().state == "showing" && r.st().target == "panel" && drawn);
 }
 
+/* The w x h part at x, y of a 1088x480 atlas, as an atlas of its own. */
+static std::vector<uint8_t> crop_of(const std::vector<uint8_t> &f, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    std::vector<uint8_t> c((size_t)w * (h + h / 2));
+    for (uint32_t r = 0; r < h; r++)
+        std::copy_n(&f[(size_t)(y + r) * 1088 + x], w, &c[(size_t)r * w]);
+    for (uint32_t r = 0; r < h / 2; r++)
+        for (uint32_t p = 0; p < 2; p++)
+            std::copy_n(&f[(size_t)(480 + y / 2 + r) * 1088 + p * 544 + x / 2], w / 2, &c[(size_t)(h + r) * w + p * w / 2]);
+    return c;
+}
+
+/* A scene with layers on the panel hosting the map (cluster-render
+ * PROTOCOL.md "host"): the map's layer moves into it, at the host's rect,
+ * its frames the host's part of the picture, the map's own slot released;
+ * hidden by the host, no layer at all and nothing sent, idle with the
+ * reason; shown again, the newest picture's part; the host gone, the map on
+ * its own target again. */
+static void hosting()
+{
+    char tmpl[] = "/tmp/woc-hosting-XXXXXX";
+    const std::string root = mkdtemp(tmpl) ? tmpl : "/nonexistent";
+    const std::string file = root + "/design.scene";
+    std::ofstream(file) << "scene 0x010004f8\nnode plate -\npass main\n";
+    chmod(file.c_str(), 0644);
+    const std::vector<uint8_t> f = atlas(3), f2 = atlas(4);
+    Rig r;
+    r.sc.targets[1].scene_files = true;
+    r.sc.scene_files.root = root;
+    r.sc.scene_files.owner = getuid();
+    r.start();
+    r.pump(2000, &f);
+    ok("hosting: the map shown on its own target", r.st().state == "showing" && r.st().target == "map" && !r.st().hosted);
+
+    cr::Client design("design", r.path);
+    r.other = &design;
+    cr::SceneOptions so;
+    so.target = "panel";
+    so.file = file;
+    so.sha256 = {crs::sha256_file(file)};
+    so.layers = true;
+    const uint32_t sc = design.scene(so);
+    r.pump(500, &f);
+    cr::Host h;
+    h.target = "map";
+    h.x = 700; h.y = 160; h.w = 560; h.h = 400;
+    h.src_x = 264; h.src_y = 40; h.src_w = 560; h.src_h = 400;
+    design.host(sc, h);
+    r.pump(2500, &f);
+    bool with = false;
+    const int map_i = r.svc->slots().index("map");
+    ok("hosted: the map in the panel's scene over the file, its frames the host's 560x400 part, the map's slot released",
+       r.st().state == "showing" && r.st().target == "panel" && r.st().hosted && r.drawing("panel", crop_of(f, 264, 40, 560, 400), &with) &&
+           with && r.gpu.graph("panel")->over_file && r.svc->compositor().layers().size() == 1 &&
+           r.svc->slots().status(map_i).state == crs::TargetState::Idle);
+
+    h.shown = false;
+    design.host(sc, h);
+    r.pump(1000, &f2);
+    ok("hidden by the host: no layer, nothing sent, idle with the reason",
+       r.svc->compositor().layers().empty() && r.st().state == "idle" && r.st().reason == MapFeed::kHostHidden &&
+           r.svc->slots().status(map_i).state == crs::TargetState::Idle);
+    h.shown = true;
+    design.host(sc, h);
+    r.pump(1500);
+    ok("shown again: the newest picture's part first", r.st().state == "showing" &&
+                                                         r.drawing("panel", crop_of(f2, 264, 40, 560, 400), &with) && with);
+
+    design.drop(sc);
+    r.pump(2000, &f2);
+    ok("the host gone: the map on its own target again",
+       r.st().state == "showing" && r.st().target == "map" && !r.st().hosted && r.drawing("map", f2, &with) && with);
+
+    /* A map smaller than the host's src (map_rect: half size, centred):
+     * the host stretches src over its rect, so the map lands as that much
+     * of the rect, at its place in src, not over the whole rect. */
+    FeedConfig fc;
+    fc.socket = r.path;
+    fc.video.level_bits = 0;
+    fc.rect = MapRect{272, 120, 544, 240};
+    r.feed.reset(new MapFeed(fc));
+    r.feed->set_stream(true, false, Picture::Shown);
+    const uint32_t sc2 = design.scene(so);
+    r.pump(500, &f);
+    cr::Host whole;
+    whole.target = "map";
+    whole.x = 700; whole.y = 160; whole.w = 544; whole.h = 240;   /* the map target, half size, no src: all of it */
+    design.host(sc2, whole);
+    r.pump(2500, &f);
+    const crs::Layer *placed = r.map_layer();
+    ok("a map smaller than the host's src: the half-size map at its place in the rect (836,220 272x120), "
+       "its frame scaled to that",
+       r.st().hosted && placed && placed->params.rect.x == 836 && placed->params.rect.y == 220 &&
+           placed->params.rect.w == 272 && placed->params.rect.h == 120 &&
+           r.drawing("panel", f, &with));
+    design.drop(sc2);
+    r.pump(500, &f);
+    r.other = nullptr;
+    const int removed = std::system(("rm -rf " + root).c_str());
+    (void)removed;
+}
+
 int main()
 {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, nullptr, _IONBF, 0);
+    hosting();
     Rig r;
     r.pump(100);
     const crs::Layer *l = r.map_layer();
@@ -748,7 +845,6 @@ int main()
     Rig b(false, 6000, false, true, true);
     b.feed.reset();   /* the rig's single feed is not used here */
     b.sc.targets[2].share = true;
-    b.sc.targets[2].strike_limit = 2;   /* as cluster-render's main sets the iDrive 7 HUD */
     b.start();
     FeedConfig bfc;
     bfc.socket = b.path;
@@ -1130,62 +1226,6 @@ int main()
        none.status("decode").hud_offset_x == 30 && none.status("decode").hud_offset_y == -20);
     none.set_hud_offset(40, -20);
     ok("and a move then is taken as asked", none.status("decode").hud_offset_x == 40);
-    }
-
-    {   /* ---- the HUD disabled by cluster-render's mapping guard ---- */
-    const std::string path = "/tmp/woc-feed-hud-guard-" + std::to_string(getpid()) + ".txt";
-    std::ofstream(path) << "version t\nboot b\nhud 0x323 0x1000400 0 1 0 2\n";
-    Rig d(false, 6000, false, true, true);
-    d.feed.reset();
-    d.sc.targets[2].share = true;
-    d.sc.targets[2].strike_limit = 2;
-    d.sc.guard_path = path;
-    d.sc.version = "t";
-    d.sc.boot_id = "b";
-    d.start();
-    FeedConfig dfc;
-    dfc.socket = d.path;
-    dfc.video.level_bits = 0;
-    MapFeeds feeds(dfc, true, true, 10);
-    feeds.set_stream(true, false, Picture::Shown);
-    std::vector<uint8_t> dspare;
-    bool hud_asked = false;
-    for (int64_t t = 0; t < 3000; t += 5) {
-        d.now += 5;
-        if (t % 65 == 0) {
-            dspare.assign(f1.begin(), f1.end());
-            feeds.offer(&dspare, (uint64_t)d.now, d.now);
-        }
-        for (int round = 0; round < 50; round++) {
-            std::vector<pollfd> fds;
-            const size_t first = d.svc->poll_fds(&fds);
-            const int n = ::poll(fds.data(), fds.size(), 0);
-            d.port.tick(d.now);
-            d.svc->after_poll(fds, first, d.now);
-            feeds.poll(d.now);
-            hud_asked = hud_asked || d.svc->slots().requested(2);
-            if (round > 0 && n <= 0)
-                break;
-        }
-    }
-    const FeedStatus ds = feeds.status("decode");
-    ok("HUD disabled by the guard: never asked for, reported disabled, its frames not scaled; the cluster's map showing",
-       !hud_asked && ds.hud_state == "disabled" && ds.state == "showing" && feeds.hud_feed() &&
-           feeds.hud_feed()->scaled_frames() == 0);
-    feeds.set_hud(false);
-    feeds.set_hud(true);
-    for (int64_t t = 0; t < 1000; t += 5) {
-        d.now += 5;
-        std::vector<pollfd> fds;
-        const size_t first = d.svc->poll_fds(&fds);
-        ::poll(fds.data(), fds.size(), 0);
-        d.port.tick(d.now);
-        d.svc->after_poll(fds, first, d.now);
-        feeds.poll(d.now);
-        hud_asked = hud_asked || d.svc->slots().requested(2);
-    }
-    ok("HUD disabled: off and on again from the app, still disabled", !hud_asked && feeds.status("decode").hud_state == "disabled");
-    unlink(path.c_str());
     }
 
     std::printf(failures ? "%d FAILED\n" : "all ok\n", failures);

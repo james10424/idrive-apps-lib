@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze 仪表盘显示",
-    "description": "在仪表盘上显示 CarPlay 或 Android Auto 地图：root 辅助程序在各自支持的情况下应用可还原的 carplay 和 aapd 补丁，开机即运行的采集程序解码地图的 H.264，并在有视频流时通过仪表盘渲染器绘制"
+    "description": "在后台运行 Waze 仪表盘显示的地图。随 Waze 仪表盘显示应用一起安装，在应用中进行控制。"
   },
   "robertn_waze_cluster": {
     "title": "Waze 仪表盘显示",
-    "description": "将 CarPlay 的 Waze 地图显示在仪表盘上：在 HMI 中启用补丁，地图即跟随 CarPlay"
+    "description": "在仪表盘上显示 CarPlay 或 Android Auto 地图，也可选择显示在 HUD 上。在支持的车辆上，安装并重启主机后自动开启。"
   }
 }

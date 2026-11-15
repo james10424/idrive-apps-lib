@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ETC2 RGBA (EAC alpha) encoder and decoder for etc2rgba assets
-(PROTOCOL.md) and the ETC2 car test (TEST-ETC2.md). Small, numpy alone.
+"""ETC2 encoder and decoder for etc2rgba and etc2rgb assets (PROTOCOL.md)
+and the ETC2 car test (TEST-ETC2.md). Small, numpy alone.
 
 Colour uses ETC1's individual and differential modes only (no T, H or
 planar), which every ETC2 decoder reads as ETC2 blocks; differential deltas
@@ -9,13 +9,15 @@ never overflow, so no block falls into T/H/planar by accident. Colour error
 is weighted by alpha. Alpha is EAC (all 16 tables, multipliers 1-15). Each
 16-byte block is the EAC alpha block, then the colour block, both
 big-endian; blocks in rows top to bottom (GL_COMPRESSED_RGBA8_ETC2_EAC).
+etc2rgb is the colour blocks alone, 8 bytes each, every pixel opaque
+(GL_COMPRESSED_RGB8_ETC2).
 
   etc2_encode.py frame ATLAS.rgba ATLAS.json OUTDIR   cut the close-up's
       middle pose, pad to 4x4 blocks, write frame.rgba, frame.etc2 and PNGs
   etc2_encode.py atlas ATLAS.rgba ATLAS.json OUTDIR   the close-up atlas
       twice side by side, 2048x1024, edges marked: atlas.etc2 and PNGs
-  etc2_encode.py encode IN.rgba W H OUT.etc2
-  etc2_encode.py decode IN.etc2 W H OUT.rgba
+  etc2_encode.py encode IN.rgba W H OUT.etc2 [etc2rgb]
+  etc2_encode.py decode IN.etc2 W H OUT.rgba [etc2rgb]
 """
 import json
 import os
@@ -34,8 +36,6 @@ EAC_TABLES = np.array([
     [-3, -4, -7, -10, 2, 3, 6, 9], [-1, -2, -3, -10, 0, 1, 2, 9], [-4, -6, -8, -9, 3, 5, 7, 8],
     [-3, -5, -7, -9, 2, 4, 6, 8]])
 
-# Pixels of a block as (y, x), in index order: i = x * 4 + y.
-ORDER = [(i % 4, i // 4) for i in range(16)]
 # Sub-blocks, as pixel indices: flip 0 left/right 2x4, flip 1 top/bottom 4x2.
 SUBS = {0: ([i for i in range(16) if i // 4 < 2], [i for i in range(16) if i // 4 >= 2]),
         1: ([i for i in range(16) if i % 4 < 2], [i for i in range(16) if i % 4 >= 2])}
@@ -158,25 +158,33 @@ def encode_alpha(a):
     return out
 
 
-def encode(img, chunk=1024):
-    """(H, W, 4) uint8, H and W multiples of 4 -> bytes."""
+def encode(img, chunk=1024, fmt='etc2rgba'):
+    """(H, W, 4) uint8, H and W multiples of 4 -> bytes. etc2rgb: the colour
+    blocks alone, alpha ignored."""
     b = blocks_of(img)
     out = []
     for i in range(0, b.shape[0], chunk):
         c = b[i:i + chunk]
-        out.append(np.concatenate([encode_alpha(c[:, :, 3]), encode_color(c[:, :, :3], c[:, :, 3])], 1))
+        if fmt == 'etc2rgb':
+            out.append(encode_color(c[:, :, :3], np.full(c.shape[:2], 255)))
+        else:
+            out.append(np.concatenate([encode_alpha(c[:, :, 3]), encode_color(c[:, :, :3], c[:, :, 3])], 1))
     return np.concatenate(out).tobytes()
 
 
-def decode(data, w, h):
-    raw = np.frombuffer(data, np.uint8).reshape(-1, 16)
+def decode(data, w, h, fmt='etc2rgba'):
+    rgb = fmt == 'etc2rgb'
+    raw = np.frombuffer(data, np.uint8).reshape(-1, 8 if rgb else 16)
     out = np.zeros((raw.shape[0], 16, 4), np.uint8)
     for bi, blk in enumerate(raw):
-        av = int.from_bytes(blk[:8].tobytes(), 'big')
-        base, mul, tab = av >> 56, (av >> 52) & 15, (av >> 48) & 15
-        for p in range(16):
-            out[bi, p, 3] = min(255, max(0, base + EAC_TABLES[tab][(av >> (45 - 3 * p)) & 7] * mul))
-        v = int.from_bytes(blk[8:].tobytes(), 'big')
+        if rgb:
+            out[bi, :, 3] = 255
+        else:
+            av = int.from_bytes(blk[:8].tobytes(), 'big')
+            base, mul, tab = av >> 56, (av >> 52) & 15, (av >> 48) & 15
+            for p in range(16):
+                out[bi, p, 3] = min(255, max(0, base + EAC_TABLES[tab][(av >> (45 - 3 * p)) & 7] * mul))
+        v = int.from_bytes(blk[-8:].tobytes(), 'big')
         diff, flip = (v >> 33) & 1, (v >> 32) & 1
         if diff:
             c1 = [(v >> (59 - 8 * ch)) & 31 for ch in range(3)]
@@ -263,8 +271,7 @@ def cmd_atlas(atlas_rgba, atlas_json, outdir):
     img[1024 - 12:1024 - 4, 1024:2044] = (0, 255, 0, 255)
     img[:4], img[-4:], img[:, :4], img[:, -4:] = 255, 255, 255, 255
     os.makedirs(outdir, exist_ok=True)
-    # Both copies are the same blocks: encode one half, then each row of
-    # blocks twice.
+    # Each half encoded on its own: their bars and frame edges differ.
     left = np.frombuffer(encode(img[:, :1024]), np.uint8).reshape(256, 256, 16)
     right = np.frombuffer(encode(img[:, 1024:]), np.uint8).reshape(256, 256, 16)
     data = np.concatenate([left, right], 1).tobytes()
@@ -286,13 +293,13 @@ def main(argv):
         cmd_frame(argv[2], argv[3], argv[4])
     elif len(argv) == 5 and argv[1] == 'atlas':
         cmd_atlas(argv[2], argv[3], argv[4])
-    elif len(argv) == 6 and argv[1] == 'encode':
+    elif len(argv) in (6, 7) and argv[1] == 'encode' and argv[6:] in ([], ['etc2rgb']):
         w, h = int(argv[3]), int(argv[4])
         img = np.fromfile(argv[2], np.uint8).reshape(h, w, 4)
-        open(argv[5], 'wb').write(encode(img))
-    elif len(argv) == 6 and argv[1] == 'decode':
+        open(argv[5], 'wb').write(encode(img, fmt=(argv[6:] or ['etc2rgba'])[0]))
+    elif len(argv) in (6, 7) and argv[1] == 'decode' and argv[6:] in ([], ['etc2rgb']):
         w, h = int(argv[3]), int(argv[4])
-        decode(open(argv[2], 'rb').read(), w, h).tofile(argv[5])
+        decode(open(argv[2], 'rb').read(), w, h, (argv[6:] or ['etc2rgba'])[0]).tofile(argv[5])
     else:
         sys.exit(__doc__)
 

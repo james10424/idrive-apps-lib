@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze au combiné",
-    "description": "Affiche la carte CarPlay ou Android Auto sur le combiné d'instruments : un assistant root applique les correctifs réversibles carplay et aapd là où chacun est pris en charge, et la capture, active dès le démarrage, décode le flux H.264 de la carte et l'affiche via le rendu du combiné dès que le flux arrive"
+    "description": "Fait fonctionner en arrière-plan la carte de Waze au combiné. Installé avec l'app Waze au combiné, depuis laquelle vous le contrôlez."
   },
   "robertn_waze_cluster": {
     "title": "Waze au combiné",
-    "description": "Affiche la carte Waze de CarPlay sur le combiné d'instruments : activez le correctif depuis l'interface du véhicule et la carte suit CarPlay"
+    "description": "Affiche la carte CarPlay ou Android Auto sur le combiné d'instruments et, si vous le souhaitez, sur le HUD. Sur les véhicules pris en charge, elle s'active d'elle-même après l'installation et un redémarrage du système."
   }
 }

@@ -117,7 +117,6 @@ struct Rig {
         if (own_panel) {
             p.scene_id = 0x010004f8;
             p.fallback_scene_id = 0x01000400;
-            p.strike_limit = 2;
         }
         TargetSpec h;
         h.name = "hud"; h.slot = 0x323; h.scene_id = 0x01000400; h.width = 800; h.height = 480; h.linger_ms = 2000;
@@ -1305,6 +1304,36 @@ static void compressed_assets()
        no.comp->asset(1, b)->refused().find("refused") != std::string::npos);
     ok("and the layer sampling it is in error, with why",
        no.comp->state(fx2, &why) == LayerState::Error && why.find("etc2rgba") != std::string::npos);
+    no.run(6000);
+    ok("and no longer wants its target: released after the linger", no.port.releases == 1);
+
+    /* etc2rgb: the same rules at 8 bytes a block, made as an etc2rgb texture. */
+    AssetParams rgb;
+    rgb.format = TexFormat::ETC2RGB;
+    rgb.w = 252;
+    rgb.h = 280;
+    const size_t m = 63 * 70 * 8;
+    ok("etc2rgb: 8 bytes a 4x4 block, charged once",
+       tex_bytes(rgb.format, 252, 280) == m && Asset::memory(rgb) == m && Asset::size_error(rgb.format, 250, 280));
+    Rig r3;
+    const uint32_t c = r3.comp->add_asset(1, r3.panel, rgb, &err);
+    std::vector<uint8_t> rgb_blocks(m, 0x5a);
+    ok("etc2rgb: whole once", r3.comp->asset(1, c)->update({}, rgb_blocks.data(), m, &err) &&
+                                  !r3.comp->asset(1, c)->update({}, rgb_blocks.data(), m, &err));
+    const uint32_t fx3 = r3.comp->add_effect(1, r3.panel, params(Klass::Overlay, R(0, 0, 252, 280)), "", kSample, 0,
+                                             r3.now, &err);
+    r3.comp->bind(1, fx3, 0, "u_atlas", c, &err);
+    r3.step(10);
+    r3.slots.on_shown(0x01000400, r3.now);
+    r3.run(50);
+    FakeGraph *g3 = r3.g("panel");
+    int rbuf = 0;
+    for (const auto &kv : g3 ? g3->shown.buffers : std::map<int, FakeBuffer>())
+        if (kv.second.f == TexFormat::ETC2RGB && kv.second.px == rgb_blocks)
+            rbuf = kv.first;
+    ok("etc2rgb: an etc2rgb texture made from its blocks, bound and shown",
+       rbuf && g3->shown.quads[g3->visible()[0]].textures["u_atlas"] == rbuf &&
+           r3.comp->state(fx3, &why) == LayerState::Shown);
 }
 
 static void transforms_and_uniforms()

@@ -74,6 +74,8 @@ void Client::connect_now(int64_t now_ms)
             queue(layer_json(kv.first, l));
             if (!l.edits.empty())
                 queue(edits_json(kv.first, l));
+            for (const auto &h : l.hosts)
+                queue(h.second);
             for (const auto &p : l.parts) {
                 queue(p.second.json);
                 if (!p.second.geometry.empty())
@@ -105,6 +107,7 @@ void Client::disconnect(int64_t now_ms)
     fd_ = -1;
     ready_ = false;
     in_.clear();
+    hosts.clear();
     /* The newest frame each video layer was given stays its last: the one
      * on its way, then any still waiting. */
     if (!cur_px_.empty())
@@ -204,6 +207,9 @@ void Client::read_events()
             auto l = layers_.find(ref);
             if (l != layers_.end())
                 l->second.sent = false;
+            /* a host refused is not sent again after a reconnect */
+            if (l != layers_.end() && j["op"] == "host")
+                l->second.hosts.erase(j["target"]);
             if (on_error)
                 on_error(j["op"], ref, j["reason"]);
         } else if (ev == "budget" && on_budget) {
@@ -211,6 +217,24 @@ void Client::read_events()
                       (unsigned)std::strtoul(j["max_kb_per_s"].c_str(), nullptr, 10), j["reason"]);
         } else if (ev == "status" && on_status) {
             on_status(j["text"]);
+        } else if (ev == "host") {
+            Host h;
+            h.target = j["target"];
+            h.into = j["into"];
+            h.shown = j["shown"] == "1";
+            int *ints[] = {&h.x, &h.y, &h.src_x, &h.src_y};
+            unsigned *sizes[] = {&h.w, &h.h, &h.src_w, &h.src_h};
+            const char *const ik[] = {"x", "y", "src_x", "src_y"}, *const sk[] = {"w", "h", "src_w", "src_h"};
+            for (int i = 0; i < 4; i++) {
+                *ints[i] = (int)std::strtol(j[ik[i]].c_str(), nullptr, 10);
+                *sizes[i] = (unsigned)std::strtoul(j[sk[i]].c_str(), nullptr, 10);
+            }
+            if (h.into.empty())
+                hosts.erase(h.target);
+            else
+                hosts[h.target] = h;
+            if (on_host)
+                on_host(h);
         }
         if (fd_ < 0)
             return;
@@ -353,13 +377,18 @@ std::string Client::layer_json(uint32_t ref, const Layer &l) const
             res += (res.empty() ? "" : " ") + r;
         for (const std::string &h : l.so.sha256)
             sha += (sha.empty() ? "" : " ") + h;
-        return json_object({{"op", json_quote("scene")},
-                            {"ref", num(ref)},
-                            {"target", json_quote(l.so.target)},
-                            {"file", json_quote(l.so.file)},
-                            {"res", json_quote(res)},
-                            {"sha256", json_quote(sha)},
-                            {"contend", flag(l.so.contend)}});
+        std::vector<std::pair<std::string, std::string>> kv = {{"op", json_quote("scene")},
+                                                               {"ref", num(ref)},
+                                                               {"target", json_quote(l.so.target)},
+                                                               {"file", json_quote(l.so.file)},
+                                                               {"res", json_quote(res)},
+                                                               {"sha256", json_quote(sha)},
+                                                               {"contend", flag(l.so.contend)}};
+        if (l.so.layers)
+            kv.push_back({"layers", "1"});
+        if (l.so.layers && l.so.layers_order_set)
+            kv.push_back({"layers_order", num(l.so.layers_order)});
+        return json_object(kv);
     }
     if (l.kind == "asset")
         return json_object({{"op", json_quote("asset")},
@@ -506,8 +535,29 @@ void Client::scene(uint32_t ref, const SceneOptions &so)
     it->second.so = so;
     it->second.so.target = target;
     it->second.edits.clear();
+    it->second.hosts.clear();   /* the service ends them with the file it replaces */
     queue(layer_json(ref, it->second));
     send_now();
+}
+
+bool Client::host(uint32_t ref, const Host &h)
+{
+    auto it = layers_.find(ref);
+    /* what the service refuses whatever it holds is not sent or kept */
+    if (it == layers_.end() || it->second.kind != "scene" || !it->second.so.layers || h.target.empty() ||
+        h.target == it->second.so.target)
+        return false;
+    std::vector<std::pair<std::string, std::string>> kv = {
+        {"op", json_quote("host")}, {"ref", num(ref)},     {"target", json_quote(h.target)}, {"x", num(h.x)},
+        {"y", num(h.y)},            {"w", num(h.w)},       {"h", num(h.h)},                  {"shown", flag(h.shown)}};
+    if (h.src_w && h.src_h)
+        kv.insert(kv.end(), {{"src_x", num(h.src_x)}, {"src_y", num(h.src_y)}, {"src_w", num(h.src_w)},
+                             {"src_h", num(h.src_h)}});
+    const std::string json = json_object(kv);
+    it->second.hosts[h.target] = json;
+    queue(json);
+    send_now();
+    return true;
 }
 
 void Client::edit(uint32_t ref, const std::string &lines)

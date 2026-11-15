@@ -1,5 +1,16 @@
 # waze-on-cluster
 
+The part of [Waze on cluster](../../apps/robertn_waze_cluster) that runs in
+the background: it puts the CarPlay or Android Auto map on the instrument
+cluster of a BMW with iDrive 7.
+
+You don't install or use it on its own. The Store installs it with the
+**Waze on cluster** app, and you control it from that app. Settings, what to
+do if the map doesn't show, and how to send logs:
+[Waze on cluster](../../apps/robertn_waze_cluster/README.md).
+
+## For developers
+
 Shows the CarPlay instrument-cluster map (Waze, Apple Maps or Google Maps),
 or Android Auto's (Google Maps), on the instrument cluster of a BMW with an
 iDrive 7 head unit (MGU), which the stock software does not do. It runs as root tools on the head unit and is
@@ -34,13 +45,13 @@ a video pipeline:
    while the map is hidden. The renderer owns the RAMSES participant, the
    DCSM slots and one upload budget for all its clients.
 
-## Install and remove
+### Install and remove
 
 Install the app `robertn_waze_cluster` from the catalog of
 [idrive-apps](https://github.com/robertnisipeanu/idrive-apps)
 through the [mgu Store](https://github.com/robertnisipeanu/mgu-store). The
-app requires this tool (0.9.3); this tool requires `cluster-render` 0.4.0 and
-`mgu-deploy` 0.7.17, the deploy tool version that runs activate and deactivate
+app requires this tool; this tool requires `cluster-render` and
+`mgu-deploy` 0.7.17 (`component.json`, `"requires"`), the deploy tool version that runs activate and deactivate
 hooks, puts the tool's `recmgr` and `crashNames` names, `aapd` among
 them, on the lists, and runs the deactivate of the version a rollback or
 downgrade leaves (patch/PATCH.md "Rollback"). Requirements resolve across catalog sources.
@@ -83,7 +94,7 @@ this tool's services and files. The renderer and the deploy tool stay. The
 next head-unit start runs the original CarPlay and aapd. Details: PATCH.md
 "Install-time activation".
 
-## Using it
+### Using it
 
 On the app's page, CarPlay's **Patch** button asks the root patch daemon
 `patchd` to apply the patch and its **Remove patch** button reverts it, which
@@ -190,8 +201,8 @@ and replaces `hide_bmw_guidance` (1) of the settings. The service makes the
 folder, owned by `hmi_5000`, at each start. A value other than 0 or 1, or a
 state file that does not read, hides the box, with a warning in the log.
 The status event carries the choice as `hide_bmw_guidance`, and
-`guide_disabled` 1 while cluster-render's mapping guard keeps the hold off
-(cluster-render README "Mapping guard"): the box then shows whatever the
+`guide_disabled` 1 while cluster-render reports the hold disabled
+(`guide_disabled` in its `target` event): the box then shows whatever the
 choice. With a
 cluster-render before 0.3.7, which has no `guide_hold`, the switch changes
 nothing.
@@ -314,9 +325,7 @@ the render decodes through a lost packet:
   since 12:40:50`) and in `probe.txt`. A status line whose only change is
   the stream's reason is logged at most once every 10 s.
 
-**Where the map shows** (the HUD contributed by
-[eroobeeroo](https://github.com/eroobeeroo), the choice of both or one after
-[wesleyredhat](https://github.com/wesleyredhat)'s #53). `cluster` (on by
+**Where the map shows.** `cluster` (on by
 default) and `hud` (off by default) choose (`src/map_feeds.*`); the app's
 **Show on** sets them to the cluster, the HUD, both or neither (**Off**),
 and each change takes effect at once:
@@ -372,12 +381,11 @@ cluster-render's `hud` target is slot 0x323 (its README.md "The HUD").
   and comes back 1.5 s after they go, never for route guidance, and never
   takes the HUD from BMW's own content. With `hud_keep_shown` 1 (the app's
   **Keep HUD map over BMW's pop-ups**) it stays shown over them.
-- **Disabled after errors.** cluster-render's mapping guard turns the HUD
-  off after two cluster restarts within 10 s of its mapping; the status
-  says `hud_state` `disabled`, the app shows `HUD map: Disabled after
-  errors`, and its frames are no longer copied or scaled. The cluster's map
-  is not affected. Choosing Cluster and then the HUD again does not undo it; as
-  root, `cluster-render guard-reset` does.
+- **Disabled after errors.** While cluster-render reports the HUD disabled
+  (`disabled` in its `target` event), the status says `hud_state`
+  `disabled`, the app shows `HUD map: Disabled after errors`, and its
+  frames are no longer copied or scaled. The cluster's map is not
+  affected.
 - The settings (`cluster`, `hud`, `hud_width_pct`, `hud_offset_x`,
   `hud_offset_y`, `hud_keep_shown`) are saved by `patchd` in
   `/var/opt/waze-on-cluster/map.state.conf` (`map_state_file`), which this
@@ -408,7 +416,28 @@ From a shell, `waze-on-cluster -c <conf> run map|panel` (`sail` is an alias
 of `map`) sets the cluster target until the service restarts and prints the
 status.
 
-## Status and diagnostics
+**Inside another app's scene.** Another app that shows a scene file on a
+target (with `layers` 1) can host the map there (cluster-render
+PROTOCOL.md "Hosting another target"): it names the map's target, a rect in
+its own target and the part of the map's target it wants. While that holds,
+the cluster's map is drawn there and only there: one video layer where its
+part lands in that rect (the app's part is stretched over the rect, so a
+map smaller than that part keeps its place in it), its frames that part of
+the picture, scaled on the head unit to at most that size
+(`src/atlas_scale.*`, the HUD's worker), and no layer
+on its own target, so the KOMBI shows its own content there and nothing of
+the map goes to it twice. The decoder is the same: one decode, one upload,
+of that part only (a 560x400 part: 336,000 B a frame instead of 783,360).
+While the app hides it, there is no layer at all and nothing is sent; the
+newest picture is held and drawn first when it shows again. When the app's
+scene goes, or cluster-render restarts, the map is back on its own target
+(and in the scene again once it says so). The status says `hosted` 1 and
+the scene's target as `target`; hidden, `state` idle with the reason
+`hidden by the app it is shown in`; not hosted, the status line is as it
+always was (no `hosted` field). While a HUD map is hosted, a new HUD size
+or offset waits for its own place. Nothing changes without such an app.
+
+### Status and diagnostics
 
 Once a second the render writes, in `/run/waze-on-cluster/` (mode 0644):
 `status.json`, the status the app shows (`state` idle, starting, showing,
@@ -550,7 +579,7 @@ and `/dev/shm/waze-on-cluster/logs.sock` (the logs service, group
 `tm_oap_app`; a connection starts it). The app's README lists the
 protocols.
 
-## Logs
+### Logs
 
 **The journal service** (`waze-on-cluster-journal.service`,
 `patch/journal_keep.js`) keeps the tools' part of the journal on
@@ -622,7 +651,7 @@ chain gets none.
 Every OAP app is in `tm_oap_app` and can use the logs socket, as it can
 `patch.sock`; the token keeps out the other devices on the hotspot.
 
-## Map size and upload
+### Map size and upload
 
 **Size.** The map covers the cluster's central map area, the stock map's
 1088x480 rect on the 1920x720 panel (138x61 mm). The patch advertises exactly
@@ -691,7 +720,7 @@ Settings are in `waze-on-cluster.conf` (documented inline). Overrides go in
 `/var/opt/waze-on-cluster/waze-on-cluster.local.conf`, which updates keep;
 the app's map settings in `/var/opt/waze-on-cluster/map.state.conf`.
 
-## The patch
+### The patch
 
 `patch/carplay_patch.js` (Node 8, no dependencies) makes five edits after a
 verified full backup. `patch/carplay_locate.js` finds each edit's site in
@@ -752,7 +781,7 @@ restarts in a loop. An apply or revert that finds nothing to change, and
 boot recovery before the service starts, give a file the service's user
 cannot run or read its original's mode and owner.
 
-## The Android Auto patch
+### The Android Auto patch
 
 `patch/aapd_patch.js` (Node 8, no dependencies) edits `/usr/bin/aapd` and
 `/etc/aapd.conf` after a verified full backup of each, only on a car coded
@@ -779,7 +808,7 @@ build-id, the version and whether the build is proven. `revert` needs no
 locator: each file's backup is trusted by its recorded SHA-256 and written
 over a file of its own build. **Never `systemctl stop` or `restart` aapd.**
 
-## Safety
+### Safety
 
 - Every head-unit variant runs, HIGH F included (0.8.2 refused it).
   Nothing of ours runs only where the variant cannot be read: a kernel
@@ -850,7 +879,7 @@ over a file of its own build. **Never `systemctl stop` or `restart` aapd.**
   node), `mgu_ufipc` (the AVB bridge's shared memory; the receiver fails
   without it) and `tm_oap_app` (the renderer's socket).
 
-## Diagnostic capture
+### Diagnostic capture
 
 CarPlay's projection-config markers are on DLT only during a phone
 connection. Press **Start capture** on the app's Logs page, then reconnect
@@ -876,7 +905,7 @@ restore shows as `restore_failed` in the app, is retried every 5 s and blocks
 a new capture. DLT is shared ECU-wide: restoring closes its TCP clients, and no
 other tracing tool should run during a capture.
 
-## Verified, and open
+### Verified, and open
 
 Verified on a car with real CarPlay Waze: the alternate display, the AVB
 capture (RTP payload type 96, single NAL units and FU-A), the decode, the map
@@ -891,7 +920,7 @@ motion reads during a long fast pan while driving; whether the alternate
 display survives iOS and Waze updates (flag 1006 is server-side). Waze sends
 no guidance metadata, so this shows map pixels, not data-driven directions.
 
-## Building and testing
+### Building and testing
 
 ```sh
 make test                         # host tests: NAL, RTP, keyframe wait, the turn-box setting, the map
@@ -920,7 +949,7 @@ are skipped without them. The repository
 carries no BMW binary. `test-firmware` runs the unit's own dlt-daemon, libdlt and
 dlt-receive from `ROOTFS`, an extracted root file system of the unit.
 
-## License
+### License
 
 GPL-3.0-or-later (`LICENSE`). `abi/include/mfx/` is a subset of the Intel
 Media SDK headers under the MIT license (`abi/include/mfx/LICENSE`).

@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze en el tablero",
-    "description": "Muestra el mapa de CarPlay o Android Auto en el tablero de instrumentos: un asistente con permisos root aplica los parches reversibles de carplay y aapd donde cada uno es compatible, y la captura, activa desde el arranque, decodifica el H.264 del mapa y lo dibuja mediante el renderizador del tablero siempre que llegue la señal"
+    "description": "Ejecuta en segundo plano el mapa de Waze en el tablero. Se instala con la aplicación Waze en el tablero, desde la que lo controlas."
   },
   "robertn_waze_cluster": {
     "title": "Waze en el tablero",
-    "description": "Muestra el mapa de Waze de CarPlay en el tablero de instrumentos: activa el parche desde el HMI y el mapa sigue a CarPlay"
+    "description": "Muestra el mapa de CarPlay o Android Auto en el tablero de instrumentos y, si lo eliges, en el HUD. En los autos compatibles se activa solo después de instalarlo y reiniciar la unidad principal."
   }
 }

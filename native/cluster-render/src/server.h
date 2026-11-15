@@ -47,6 +47,8 @@ public:
     std::string status_text(int64_t now_ms) const;
     /* Where the scene files clients name may come from (scene_file.h). */
     void set_scene_files(const SceneFiles &where) { scene_files_ = where; }
+    /* The drop-ins' lines for the status (ServiceConfig::drop_ins). */
+    void set_drop_ins(const std::vector<std::string> &lines) { drop_ins_ = lines; }
 
 private:
     struct Client {
@@ -59,6 +61,8 @@ private:
         std::map<uint32_t, uint32_t> assets;          /* the client's ref -> asset id */
         std::map<uint32_t, std::string> layer_sent;   /* by ref: the state line last sent */
         std::map<std::string, std::string> target_sent;
+        std::map<std::string, std::string> host_sent;   /* by hosted target: its host event last sent */
+        uint64_t host_gen = 0;                          /* the Server's hosts_gen_ it was compared with */
         std::map<uint32_t, std::string> frame_error;  /* by ref: the last frame error sent */
         std::string budget_sent;
         bool closing = false;
@@ -83,6 +87,8 @@ private:
     /* A scene file on a target (PROTOCOL.md "Scene files"), and its edits. */
     void op_scene(Client &c, const cr::Json &j);
     void op_edit(Client &c, uint32_t ref, const cr::Json &j);
+    /* The scene ref hosts a target (PROTOCOL.md "host"). */
+    void op_host(Client &c, uint32_t ref, const cr::Json &j);
     /* set, uniform, bind, part, transform, animate and stop. */
     void op_on_layer(Client &c, const std::string &op, uint32_t ref, Layer *l, const cr::Json &j);
     void op_uniform(Client &c, uint32_t ref, Layer *l, const cr::Json &j);
@@ -92,11 +98,16 @@ private:
     SlotManager *slots_;
     std::string backend_;
     SceneFiles scene_files_;
+    std::vector<std::string> drop_ins_;
     int listen_fd_ = -1;
     bool own_path_ = false;
     std::string path_;
     std::vector<Client> clients_;
     uint64_t next_client_ = 1;
+    /* The host events as of the compositor's host_serial(); hosts_gen_
+     * counts each time they were made again (report()). */
+    std::map<std::string, std::string> hosts_;
+    uint64_t hosts_serial_ = 0, hosts_gen_ = 0;
 };
 
 }  // namespace crs

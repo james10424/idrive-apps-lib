@@ -135,7 +135,7 @@ cr.on('layer', (ref, state, reason) => log('layer ' + (names[ref] || ref) + ': '
 cr.on('target', (name, state, holder, reason, guideDisabled, disabled) => {
     if (name !== 'hud') return;
     log('target hud: ' + state + (holder ? ' holder ' + holder : '') + (reason ? ' - ' + reason : '') +
-        (disabled ? ' (mapping guard: disabled)' : ''));
+        (disabled ? ' (disabled)' : ''));
 });
 cr.on('refused', (op, ref, reason) => log('REFUSED ' + op + ' ' + (names[ref] || ref) + ': ' + reason));
 cr.on('status', (text) => {

@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze göstergede",
-    "description": "CarPlay veya Android Auto haritasını gösterge panelinde gösterir: bir root yardımcısı geri alınabilir carplay ve aapd yamalarını desteklendikleri yerde uygular; açılıştan itibaren çalışan kayıt, haritanın H.264 akışını çözer ve akış geldikçe gösterge oluşturucu üzerinden çizer"
+    "description": "Waze göstergede haritasını arka planda çalıştırır. Waze göstergede uygulamasıyla birlikte kurulur ve o uygulamadan kontrol edilir."
   },
   "robertn_waze_cluster": {
     "title": "Waze göstergede",
-    "description": "CarPlay Waze haritasını gösterge paneline getirir: yamayı aracın ekranından etkinleştirin, harita CarPlay'i izler"
+    "description": "CarPlay veya Android Auto haritasını göstergede, isterseniz HUD'da da gösterir. Desteklenen araçlarda kurulumdan ve ana ünitenin yeniden başlatılmasından sonra kendiliğinden açılır."
   }
 }

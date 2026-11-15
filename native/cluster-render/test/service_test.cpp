@@ -23,8 +23,8 @@
  * the box taken over and parked behind it, while the map is shown, and with
  * the seat-belt panel parked there; released with the map and at stop; the
  * map's layer choosing it with guide_hold, and a client without the field
- * getting it. The mapping guard (guard.h) striking and disabling the hold
- * on cluster restarts, never the map. A video frame repeated: a few bytes
+ * getting it. Cluster restarts right after the hold's mapping, again and
+ * again: the map and the hold shown again after each. A video frame repeated: a few bytes
  * that keep the layer from stalling, to a service that takes repeats; the
  * last frame whole again to one that does not, to one that restarted and
  * after the service refuses the layer; a refused layer's still map answered
@@ -43,7 +43,8 @@
  * changing nothing reported; another file in place, the slot neither
  * released nor asked for again; its client gone, kept through the linger
  * and then released. The HUD's layers choose whether it gives way to the
- * stock pop-ups (yield), a client without the field getting it. */
+ * stock pop-ups (yield), a client without the field getting it. A scene
+ * with layers and a host of the map (layers_and_hosting). */
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -64,6 +65,7 @@
 #include <vector>
 
 #include "../kit/yuv_atlas.h"
+#include "../src/log.h"
 #include "../src/service.h"
 #include "cluster_render/client.h"
 #include "fake_graph.h"
@@ -358,7 +360,6 @@ static void hold_rig(Rig &r)
     TargetSpec g;
     g.name = "guide_0x105"; g.slot = 0x105; g.scene_id = kGuide; g.width = g.height = 16; g.linger_ms = 0;
     g.take_over_stock = true; g.follows = "map"; g.take_over_contents = {kBox};
-    g.strike_limit = 2;   /* as load_holds makes it */
     r.sc.targets.push_back(g);
     r.start();
     r.port.stock_map(0x100, kHmiMap);
@@ -509,21 +510,13 @@ static void kombi_restart(Rig &r)
     r.port.set_up(true);
 }
 
-/* The mapping guard (guard.h) in the service: a cluster restart right after
- * the hold's mapping strikes the hold, also while it is asked for in the
- * tick its map is shown; two disable it, which is then never asked for,
- * also after a service restart, and the map's client is told; a restart
- * long after any mapping is no strike; the map (its strike limit the
- * default, as main.cpp leaves it) only has its strikes logged; a client's
- * guard_reset is an unknown op. */
-static void mapping_guard()
+/* Cluster restarts right after the hold's mapping, again and again: each
+ * logged naming the target mapped last, and the map and the hold shown
+ * again after each; the map's client never told either is disabled, the
+ * status has no line about it; after a service restart the same. */
+static void display_drops()
 {
-    const std::string path = "/tmp/crs-guard-" + std::to_string(getpid()) + ".txt";
-    unlink(path.c_str());
     Rig r;
-    r.sc.guard_path = path;
-    r.sc.version = "0.3.7";
-    r.sc.boot_id = "boot-1";
     hold_rig(r);
     cr::Client a("waze", r.path);
     Events ea;
@@ -535,36 +528,27 @@ static void mapping_guard()
     lo.contend = true;
     const uint32_t map = show_map(r, a, lo);
     const SlotInfo *ours = r.port.row(0x105, kGuide);
-    ok("guard: the map and the hold shown", ea.target["map"] == "shown" && ours && ours->map_status == 1);
+    ok("drops: the map and the hold shown", ea.target["map"] == "shown" && ours && ours->map_status == 1);
 
-    kombi_restart(r);
-    std::string text = r.svc->guard().status_text();
-    ok("a cluster restart 0.3 s after the hold's mapping: a strike against the hold, none against the map",
-       text == "guard: guide_0x105 0x105 0x10004f1 0: 1 strike\n");
-    for (int k = 0; k < 1000 && !r.port.pending.count(kGuide); k++)
-        r.pump(5);
-    ok("both asked for again: the map shown, the hold asked for in the same tick",
-       r.port.pending.count(kGuide) && ea.target["map"] == "shown");
-    kombi_restart(r);
-    r.pump(5000);
-    text = r.svc->server().status_text(r.now);
-    ok("a second, before the hold is shown: the hold disabled, in the status; the map shown again without it, "
-       "the box shown",
-       has(text, "guard: guide_0x105 0x105 0x10004f1 0: disabled, 2 strikes\n") && ea.target["map"] == "shown" &&
-           !r.port.row(0x105, kGuide) && box_status(r) == 1);
-
-    r.pump(15000);
-    kombi_restart(r);
-    ok("a restart 15 s after the last mapping: no strike",
-       r.svc->guard().status_text() == "guard: guide_0x105 0x105 0x10004f1 0: disabled, 2 strikes\n");
-    for (int k = 0; k < 3; k++) {
-        r.pump(3000);
+    uint64_t log_seq = 0;
+    std::vector<std::string> lines;
+    cld::log_lines_since(&log_seq, &lines);
+    for (int k = 0; k < 4; k++) {
+        lines.clear();
         kombi_restart(r);
+        cld::log_lines_since(&log_seq, &lines);
+        bool logged = false;
+        for (const std::string &l : lines)
+            logged = logged || l.find("the display service went away") != std::string::npos;
+        r.pump(5000);
+        ours = r.port.row(0x105, kGuide);
+        ok(("drop " + std::to_string(k + 1) + " right after a mapping: logged; the map and the hold shown again")
+               .c_str(),
+           logged && ea.target["map"] == "shown" && ours && ours->map_status == 1);
     }
-    r.pump(3000);
-    text = r.svc->guard().status_text();
-    ok("restarts right after the map's mapping: its strikes logged, the map never disabled",
-       has(text, "guard: map 0x100 0x10004f0 0: 3 strikes\n") && ea.target["map"] == "shown");
+    ok("the map's client never told the hold or the map is disabled; no such status line",
+       !a.guide_disabled["map"] && !a.disabled["map"] &&
+           !has(r.svc->server().status_text(r.now), "guard") && !has(r.svc->server().status_text(r.now), "strike"));
 
     r.svc.reset();
     r.start();
@@ -573,19 +557,8 @@ static void mapping_guard()
         a.frame(map, f.data(), f.size(), 2 + k);
         r.pump(50);
     }
-    ok("a service restart: the hold still disabled, the map shown without it",
-       has(r.svc->server().status_text(r.now), "guard: guide_0x105 0x105 0x10004f1 0: disabled, 2 strikes") &&
-           ea.target["map"] == "shown" && !r.port.row(0x105, kGuide));
-
-    ok("the map's client told the hold is disabled", a.guide_disabled["map"]);
-    Raw reset(r.path);
-    reset.send("{\"op\":\"hello\",\"app\":\"reset\"}");
-    reset.send("{\"op\":\"guard_reset\"}");
-    r.pump(2000);
-    ok("guard_reset from a client: an unknown op, the hold still disabled",
-       has(reset.events(), "unknown op") && has(r.svc->guard().status_text(), "disabled, 2 strikes") &&
-           !r.port.row(0x105, kGuide));
-    unlink(path.c_str());
+    ours = r.port.row(0x105, kGuide);
+    ok("a service restart: the map and the hold shown", ea.target["map"] == "shown" && ours && ours->map_status == 1);
 }
 
 /* A service that answers the hello as told and keeps what the client
@@ -978,6 +951,11 @@ static std::string written(const std::string &path, const std::string &text)
     return path;
 }
 
+static bool gauge_edited_turn(const FakeFileScene *s, float turn)
+{
+    return s && s->shown.pose.count("needle_pivot r") && s->shown.pose.at("needle_pivot r")[2] == turn;
+}
+
 static bool gauge_edited(const FakeFileScene *s, float turn)
 {
     return s && s->shown.pose.count("needle_pivot r") && s->shown.pose.at("needle_pivot r")[2] == turn &&
@@ -1222,6 +1200,239 @@ static void scene_files()
     r.pump(2500);
     ok("then released and unpublished", eb.target["panel"] == "idle" && !r.gpu.file("panel") && !r.gpu.graph("panel"));
     unlink(outside.c_str());
+    const int removed = std::system(("rm -rf " + root).c_str());
+    (void)removed;
+}
+
+/* A scene with layers 1 (PROTOCOL.md "Layers over a scene file", "host"):
+ * the target's layers drawn over the file in a graph of its own past the
+ * file's passes, edits flushed with them; a host of the map told to every
+ * client, refused for the scene's own target, outside its target, by a
+ * second scene's host and without layers, ended by layers 0; a producer
+ * moving its video from the map to the host's rect, drawn over the file, the
+ * map released; hidden; the scene, its edits and host back after a service
+ * restart; dropped, the host ended and the layers in a plain scene again; a
+ * backend drawing nothing over files: the layers wait, the file shown. */
+static void layers_and_hosting()
+{
+    char tmpl[] = "/tmp/crs-service-hosting-XXXXXX";
+    const std::string root = mkdtemp(tmpl) ? tmpl : "/nonexistent";
+    const std::string gauge = written(root + "/gauge.scene", kGaugeScene);
+    Rig r;
+    r.sc.targets[1].scene_files = true;
+    r.sc.scene_files.root = root;
+    r.sc.scene_files.owner = getuid();
+    r.start();
+    cr::Client a("design", r.path), b("producer", r.path);
+    Events ea, eb;
+    ea.wire(a);
+    eb.wire(b);
+    std::vector<cr::Host> told;
+    b.on_host = [&told](const cr::Host &h) { told.push_back(h); };
+    r.clients = {&a, &b};
+    r.pump(50);
+
+    cr::LayerOptions ml;
+    ml.target = "map";
+    ml.contend = true;
+    uint32_t video = b.video(ml, cr::VideoOptions());
+    const std::vector<uint8_t> f1 = atlas(1);
+    b.frame(video, f1.data(), f1.size(), 1);
+    r.pump(1500);
+    ok("hosting: the producer's map shown", eb.layer[video] == "shown" && eb.target["map"] == "shown");
+
+    cr::SceneOptions so;
+    so.target = "panel";
+    so.file = gauge;
+    so.sha256 = {sha256_file(gauge)};
+    so.layers = true;
+    const uint32_t sc = a.scene(so);
+    a.edit(sc, "--rotate ^needle_pivot$=0,0,30");
+    cr::LayerOptions pl;
+    pl.target = "panel";
+    pl.klass = "overlay";
+    pl.x = 700; pl.y = 160; pl.w = 560; pl.h = 400;
+    const cr::EffectOptions fade{"#version 100\nvoid main(){gl_FragColor=vec4(0.0);}", "", 0};
+    const uint32_t edge = a.effect(pl, fade);
+    r.pump(1500);
+    FakeGraph *g = r.gpu.graph("panel");
+    ok("layers 1: the file loaded, the layers drawn over it past its one pass, its edits flushed",
+       ea.layer[sc] == "shown" && ea.layer[edge] == "shown" && r.gpu.file("panel") && g && g->over_file &&
+           g->over_order == 1 && g->visible().size() == 1 && gauge_edited_turn(r.gpu.file("panel"), 30));
+    ok("the status names it",
+       has(r.svc->server().status_text(r.now), "1 edit lines kept; layers over it: shown"));
+
+    cr::Host h;
+    h.target = "map";
+    h.x = 700; h.y = 160; h.w = 560; h.h = 400;
+    h.src_x = 264; h.src_y = 40; h.src_w = 560; h.src_h = 400;
+    a.host(sc, h);
+    r.pump(50);
+    ok("it hosts the map: the producer told where",
+       b.hosts.count("map") && b.hosts["map"].into == "panel" && b.hosts["map"].w == 560 &&
+           b.hosts["map"].src_x == 264 && b.hosts["map"].shown && !told.empty());
+    {
+        Raw raw(r.path);
+        raw.send("{\"op\":\"hello\",\"app\":\"raw\",\"proto\":1}");
+        raw.send("{\"op\":\"host\",\"ref\":9,\"target\":\"map\",\"x\":0,\"y\":0,\"w\":10,\"h\":10}");
+        r.pump(50);
+        ok("a client after it is told too; a host without a scene refused",
+           raw.events().find("\"ev\":\"host\",\"target\":\"map\",\"into\":\"panel\"") != std::string::npos &&
+               raw.in.find("no such scene") != std::string::npos);
+    }
+    cr::Host own = h;
+    own.target = "panel";
+    ok("its own target: refused by the client, nothing sent", !a.host(sc, own));
+    cr::Host outside = h;
+    outside.x = 1800;
+    a.host(sc, outside);
+    r.pump(50);
+    ok("a rect outside the panel refused, and the scene's host of the map ended with it",
+       has(ea.errors, "host: x, y, w, h must lie inside panel") && !b.hosts.count("map") && told.back().into.empty());
+    cr::Host past = h;
+    past.src_x = 800;
+    a.host(sc, past);
+    r.pump(50);
+    ok("a part outside the map refused", has(ea.errors, "host: src_x, src_y, src_w, src_h must lie inside map"));
+    a.host(sc, h);
+    r.pump(50);
+    ok("hosted again", b.hosts.count("map") && b.hosts["map"].x == 700);
+
+    /* The producer moves its video to the host's rect: one layer, cropped. */
+    b.drop(video);
+    cr::LayerOptions hl;
+    hl.target = "panel";
+    hl.x = h.x; hl.y = h.y; hl.w = h.w; hl.h = h.h;
+    cr::VideoOptions crop;
+    crop.w = 560;
+    crop.h = 400;
+    crop.stall_ms = 600000;   /* one frame for the whole test */
+    video = b.video(hl, crop);
+    std::vector<uint8_t> f2(560 * 600, 90);
+    b.frame(video, f2.data(), f2.size(), 2);
+    r.pump(2000);
+    g = r.gpu.graph("panel");
+    ok("the producer's video over the file in the host's rect, under the scene owner's overlay; the map released",
+       eb.layer[video] == "shown" && g && g->over_file && g->visible().size() == 2 && eb.target["map"] == "idle" &&
+           r.gpu.file("panel"));
+    a.edit(sc, "--rotate ^needle_pivot$=0,0,45");
+    r.pump(100);
+    ok("edits flush with the layers", gauge_edited_turn(r.gpu.file("panel"), 45));
+
+    /* The video's write refused: it holds the target (a half-written
+     * buffer); the file's edits flush all the same. */
+    g->write_budget = 0;
+    std::vector<uint8_t> f3(560 * 600, 160);
+    b.frame(video, f3.data(), f3.size(), 3);
+    r.pump(100);
+    const uint64_t held_flushes = g->flushes;
+    a.edit(sc, "--rotate ^needle_pivot$=0,0,50");
+    r.pump(100);
+    ok("a video holding the target over the file: the file's edits flush all the same",
+       gauge_edited_turn(r.gpu.file("panel"), 50) && g->flushes > held_flushes);
+    g->write_budget = -1;
+    b.frame(video, f2.data(), f2.size(), 4);
+    r.pump(300);
+    ok("its writes allowed again: the video whole again", eb.layer[video] == "shown");
+    a.edit(sc, "--rotate ^needle_pivot$=0,0,45");
+    r.pump(100);
+
+    h.shown = false;
+    a.host(sc, h);
+    r.pump(50);
+    ok("hidden: told", b.hosts.count("map") && !b.hosts["map"].shown);
+    h.shown = true;
+    a.host(sc, h);
+
+    r.svc.reset();
+    r.pump(100);
+    ok("the service gone: no host known", b.hosts.empty());
+    r.start();
+    ea.layer.clear();
+    r.pump(1000);
+    b.frame(video, f2.data(), f2.size(), 3);   /* the producer's next frame: the last one whole again */
+    r.pump(1000);
+    ok("after a restart: the scene, its edits and its host back, the video over it",
+       ea.layer[sc] == "shown" && gauge_edited_turn(r.gpu.file("panel"), 45) && b.hosts.count("map") &&
+           b.hosts["map"].shown && r.gpu.graph("panel") && r.gpu.graph("panel")->over_file &&
+           eb.layer[video] == "shown");
+
+    so.layers = false;
+    a.scene(sc, so);
+    r.pump(1500);
+    ok("layers 0: the host ended, the layers waiting, a host refused by the client",
+       !b.hosts.count("map") && told.back().into.empty() && eb.layer[video] == "waiting" && !a.host(sc, h));
+    /* What the client keeps: not the ended host (replaced, layers 0). */
+    r.svc.reset();
+    r.pump(100);
+    r.start();
+    r.pump(1500);
+    ok("after a restart the client sends no host the scene's replacement ended",
+       !has(ea.errors, "host: a scene hosts only with layers 1") && !b.hosts.count("map"));
+    so.layers = true;
+    a.scene(sc, so);
+    a.host(sc, h);
+    r.pump(1500);
+    b.frame(video, f2.data(), f2.size(), 5);
+    r.pump(300);
+    ok("layers 1 again: hosted, the video shown", b.hosts.count("map") && eb.layer[video] == "shown");
+
+    /* A host refused is not kept by the client either: not sent again. */
+    a.host(sc, outside);
+    r.pump(50);
+    const auto refusals = [&ea]() {
+        return std::count(ea.errors.begin(), ea.errors.end(), std::string("host: x, y, w, h must lie inside panel"));
+    };
+    const long before_restart = refusals();
+    r.svc.reset();
+    r.pump(100);
+    r.start();
+    r.pump(1500);
+    ok("a refused host: the host ended, and not sent again after a restart",
+       before_restart == 2 && refusals() == 2 && !b.hosts.count("map"));
+    b.frame(video, f2.data(), f2.size(), 6);   /* the producer's next frame after the restart */
+    r.pump(100);
+
+    /* A file that fails to load ends what the scene hosted. */
+    a.host(sc, h);
+    r.pump(1500);
+    const bool hosted_before = b.hosts.count("map") != 0;
+    r.gpu.fail_loads = true;
+    a.scene(sc, so);
+    a.host(sc, h);
+    r.pump(1500);
+    ok("a file that fails to load: its host ended, told, and gone from the status",
+       hosted_before && ea.layer[sc] == "error" && !b.hosts.count("map") &&
+           !has(r.svc->server().status_text(r.now), "hosts map"));
+    r.gpu.fail_loads = false;
+    a.scene(sc, so);
+    r.pump(1500);
+    ok("the file replaced: shown, nothing hosted until it says so", ea.layer[sc] == "shown" && !b.hosts.count("map"));
+
+    a.drop(sc);
+    r.pump(1500);
+    g = r.gpu.graph("panel");
+    ok("the scene dropped: the host ended, the layers in a plain scene",
+       !b.hosts.count("map") && told.back().into.empty() && g && !g->over_file && eb.layer[video] == "shown" &&
+           !r.gpu.file("panel"));
+
+    r.gpu.refuse_layers = true;
+    const uint32_t sc2 = a.scene(so);
+    r.pump(1500);
+    ok("a backend drawing nothing over files: the file shown, the layers waiting for it",
+       ea.layer[sc2] == "shown" && eb.layer[video] == "waiting" && r.gpu.file("panel") && !r.gpu.graph("panel"));
+    a.host(sc2, h);
+    r.pump(100);
+    ok("and a host there refused, nobody told: the producer stays where it is drawn",
+       has(ea.errors, "host: the display draws no layers over this scene") && !b.hosts.count("map"));
+    {
+        Raw raw(r.path);
+        raw.send("{\"op\":\"hello\",\"app\":\"raw3\",\"proto\":1}");
+        raw.send("{\"op\":\"host\",\"ref\":7,\"target\":\"map\",\"x\":0,\"y\":0,\"w\":10,\"h\":10,\"src_x\":0}");
+        r.pump(50);
+        ok("a host's error names its target", raw.events().find("\"op\":\"host\",\"ref\":7,\"target\":\"map\"") !=
+                                                  std::string::npos);
+    }
     const int removed = std::system(("rm -rf " + root).c_str());
     (void)removed;
 }
@@ -1612,6 +1823,9 @@ int main()
         rawm.send_message(cr::frame_head(4, 1, {cr::FrameRect{0, 0, 4, 4}}, blk.size()) + blk);
         const std::string four(64, '\x55');
         rawm.send_message(cr::frame_head(4, 2, {}, four.size()) + four);
+        rawm.send("{\"op\":\"asset\",\"ref\":5,\"target\":\"panel\",\"format\":\"etc2rgb\",\"w\":8,\"h\":8}");
+        const std::string rgb(32, '\x55');
+        rawm.send_message(cr::frame_head(5, 1, {}, rgb.size()) + rgb);
     }
     rawm.send("{\"op\":\"status\"}");
     r.pump(100);
@@ -1633,6 +1847,8 @@ int main()
     ok("its frames have no rects", said.find("sent whole, with no rects") != std::string::npos);
     ok("whole, it is taken, and status names it",
        said.find("sent once") == std::string::npos && said.find("etc2rgba 8x8") != std::string::npos);
+    ok("an etc2rgb asset is taken whole at 8 bytes a block",
+       said.find("etc2rgb 8x8") != std::string::npos && said.find("a whole asset is") == std::string::npos);
     ok("and the service still answers", said.find("\"ev\":\"status\"") != std::string::npos);
     {
         Rig r8;
@@ -1679,10 +1895,11 @@ int main()
     guide_hold();
     guide_hold_choice();
     hud_yield_choice();
-    mapping_guard();
+    display_drops();
     repeats();
     framing();
     scene_files();
+    layers_and_hosting();
     std::printf(failures ? "%d FAILED\n" : "all ok\n", failures);
     return failures ? 1 : 0;
 }

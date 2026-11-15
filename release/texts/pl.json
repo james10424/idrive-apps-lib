@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze na zegarach",
-    "description": "Wyświetla mapę CarPlay lub Android Auto na zestawie wskaźników: pomocnik z uprawnieniami root stosuje odwracalne poprawki carplay i aapd tam, gdzie każda jest obsługiwana, a rejestracja działająca od uruchomienia dekoduje obraz H.264 mapy i rysuje go przez renderer zestawu wskaźników, gdy tylko płynie strumień"
+    "description": "Obsługuje w tle mapę aplikacji Waze na zegarach. Instaluje się razem z aplikacją Waze na zegarach, z której nim sterujesz."
   },
   "robertn_waze_cluster": {
     "title": "Waze na zegarach",
-    "description": "Przenosi mapę Waze z CarPlay na zestaw wskaźników: włącz poprawkę w HMI, a mapa podąża za CarPlay"
+    "description": "Wyświetla mapę CarPlay lub Android Auto na zegarach, a jeśli wybierzesz, także na HUD. W obsługiwanych autach włącza się sama po instalacji i ponownym uruchomieniu jednostki głównej."
   }
 }

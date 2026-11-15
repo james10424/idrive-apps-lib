@@ -186,7 +186,7 @@ $(BUILD)/host/udp_probe_test: test/udp_probe_test.cpp src/framing_probe.cpp src/
 # The map feed against the shared renderer's service on fake display
 # backends, over its socket, with the freeze watch driving it: every service
 # source but the units' backends, the starter and its main.
-CR_CORE = $(filter-out $(addprefix $(CR)/src/,main.cpp graph_ramses19.cpp dcsm2_link.cpp config.cpp log.cpp \
+CR_CORE = $(filter-out $(addprefix $(CR)/src/,main.cpp settings.cpp graph_ramses19.cpp dcsm2_link.cpp config.cpp log.cpp \
                          unit_idrive7.cpp unit_idrive8.cpp graph_ramses27.cpp launch.cpp generation.cpp refused.cpp head_unit.cpp), \
           $(wildcard $(CR)/src/*.cpp)) $(wildcard $(KIT)/*.cpp)
 # Each of its sources compiles once, with its header dependencies.

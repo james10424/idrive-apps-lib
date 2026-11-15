@@ -1,18 +1,143 @@
-# robertn_waze_cluster
+# Waze on cluster
 
-The HMI app for [waze-on-cluster](../../native/waze-on-cluster), which shows
-the CarPlay cluster map (Waze, Apple Maps or Google Maps), or Android Auto's,
-on the instrument cluster of an iDrive 7 (MGU) head unit. Everything is done from the HMI; no
-shell is needed.
+Shows your phone's navigation map on the instrument cluster of a BMW with
+iDrive 7. It can also show it on the head-up display (experimental).
 
-Install it from the catalog of
-[idrive-apps](https://github.com/robertnisipeanu/idrive-apps)
-through the [mgu Store](https://github.com/robertnisipeanu/mgu-store). It requires
-waze-on-cluster 0.9.3, which brings the cluster renderer and writes the
-CarPlay patch, and the Android Auto patch where the car supports it, as it
-installs; one head-unit start activates them. After that
-the map is on the cluster whenever CarPlay streams it, whether or not this
-app is open.
+- **CarPlay:** Waze, Apple Maps or Google Maps.
+- **Android Auto:** Google Maps.
+
+Whether your car and its software are supported can differ for CarPlay and
+Android Auto. The app's **Status** for each tells you.
+
+![The map on the cluster](../../docs/hud/cluster-map.jpg)
+
+## Install
+
+1. In the [mgu Store](https://github.com/robertnisipeanu/mgu-store), add the
+   source `robertnisipeanu/idrive-apps`.
+2. Install **Waze on cluster**. The Store installs everything it needs with
+   it.
+3. Restart the head unit when the Store asks.
+4. In the car's settings, set **Instrument cluster > Central display area**
+   to **Map view**.
+5. Connect your phone and start navigation.
+
+## What happens automatically
+
+- Installing the app turns the map on for CarPlay and for Android Auto,
+  each where your car supports it. You don't need to press anything.
+- If a **Status** isn't `Patched` after the restart, see
+  [If the map doesn't show](#if-the-map-doesnt-show).
+- Updates keep it on.
+- The map shows whenever your phone sends it. The app doesn't need to be
+  open.
+
+### Do I need to press Patch or Remove patch?
+
+No. Leave them alone unless something is wrong.
+
+- Press **Patch** when that phone type's **Status** says `Not patched`,
+  `Update needed` or `Removed — head unit kept restarting`. For any other
+  Status, see [If the map doesn't show](#if-the-map-doesnt-show).
+- **Remove patch** turns the map off for that phone type. Use it only if
+  you want the map off, or to troubleshoot. It stays off, also after
+  updates, until you press **Patch**.
+- CarPlay and Android Auto are separate. If you only use CarPlay, leave
+  Android Auto's buttons alone, and the other way round. Neither one
+  affects the other.
+
+![CarPlay's section: Status: Patched](docs/main-carplay.png)
+
+## Settings
+
+The app is in the head unit's display language.
+
+**General**
+
+- **Show on:** where the map shows: **Cluster** (the default), **HUD
+  (experimental)**, **Cluster and HUD (experimental)** or **Off**. The
+  change is immediate. **Off** shows BMW's own content on both.
+- **Own settings for this driver:** ticked, the current driver profile
+  keeps its own Show on, HUD size and HUD position.
+- **Hide BMW's turn box:** ticked (the default), BMW's turn-by-turn box on
+  the cluster is hidden while the map shows.
+- **Logs:** opens the Logs page (see below).
+
+**HUD**
+
+- **HUD map:** what the HUD map is doing.
+- **Keep HUD map over BMW's pop-ups:** unticked (the default), the map steps
+  aside while BMW's media and list pop-ups show on the HUD. Ticked, it
+  stays.
+- **Size:** how wide the map is on the HUD.
+- **Move left / Move right / Move up / Move down** and **Centre:** where the
+  map sits on the HUD.
+
+**CarPlay** and **Android Auto**
+
+- **Status:** whether the map is on for that phone type.
+- **Patch** and **Remove patch:** see
+  [above](#do-i-need-to-press-patch-or-remove-patch).
+- **CarPlay Wi-Fi** (CarPlay only): the Wi-Fi band your iPhone uses.
+- **Zoom out / Zoom in** (Android Auto only): out shows more map, in shows
+  bigger text.
+- **Hide phone's turn card** (Android Auto only): hides Google Maps' own
+  turn card at the top of the map.
+
+**Restart head unit** shows when a change needs a restart. Press it to
+apply the change.
+
+## If the map doesn't show
+
+| If you see | Do this |
+|---|---|
+| `Status: Not patched` | Press **Patch**. |
+| `Status: Update needed` | Press **Patch**. |
+| `Status: Patched after restart` or `Removed after restart` | Restart the head unit. If **Restart head unit** shows on the app's page, press it. |
+| `Status: Removed — head unit kept restarting` | The patch was removed because the head unit kept restarting. Press **Patch** to try again. If it happens again, [report it](#logs-and-reporting-a-problem). |
+| `Status: Untested version` | This software version of your car hasn't been tested. You can press **Patch** to try it. If the head unit keeps restarting, the patch is removed again by itself. |
+| `Status: Not supported on this car` | Your car doesn't support the map for this phone type. |
+| `Status: Unavailable` | If it stays once the head unit has fully started, [report it](#logs-and-reporting-a-problem). |
+| `Status: Failed`, `Partly patched` or `Changed by another tool` | [Report it](#logs-and-reporting-a-problem). |
+| `Cluster map: Off` | Check **Show on**: **Off** and **HUD (experimental)** keep the map off the cluster. Check that CarPlay's or Android Auto's Status is `Patched`. |
+| `Cluster map: Waiting for the phone` | Connect your phone. |
+| `Cluster map: Waiting for the phone's map` | Start navigation on your phone. |
+| `Cluster map: Frozen` or `Stream lost` | Reconnect your phone: unplug it, or turn its Wi-Fi off and on. This can happen after you change the cluster's Central display area. |
+| The map never shows on the cluster | Set **Instrument cluster > Central display area** to **Map view**. |
+| `Cluster map: Error` or `Unavailable` | [Report it](#logs-and-reporting-a-problem). |
+| `HUD map: Disabled after errors` | The HUD map was turned off because the instrument cluster restarted right after it showed. It stays off until the next update of Cluster renderer. The cluster map keeps working. |
+| CarPlay audio cuts out and `CarPlay Wi-Fi: 2.4 GHz` | On your iPhone, turn Wi-Fi off and on. |
+
+## Logs and reporting a problem
+
+1. Open **Logs** on the app's page.
+2. Press **Save logs**.
+3. Turn on the car's Wi-Fi hotspot and connect your phone to it.
+4. Scan the QR code on the Logs page, or open the **Address** it shows, and
+   download the newest file.
+5. Open an issue at
+   [github.com/robertnisipeanu/idrive-apps/issues](https://github.com/robertnisipeanu/idrive-apps/issues):
+   say what you saw, what you expected, your car model, and attach the file.
+
+If you are asked for a capture: press **Start capture**, reconnect your
+phone, wait until the problem shows, then press **Save logs**. The capture
+stops by itself after 5 minutes.
+
+![The Logs page](docs/logs-page.png)
+
+## Remove
+
+In the Store, remove the **Waze on cluster** app, then the **Waze on
+cluster** tool. The original CarPlay and Android Auto come back at the next
+head-unit restart.
+
+## For developers
+
+How the app works, its page and sockets, and how to build and test it are
+below. The map service and the patches are in
+[waze-on-cluster](../../native/waze-on-cluster).
+
+### The cluster's Central display area
 
 Set **Instrument cluster > Central display area** to **Map view**: the Waze
 map replaces the stock map while CarPlay's cluster stream shows a map, and
@@ -26,10 +151,7 @@ the map returns: the change can freeze the phone's cluster stream, and the
 page then shows `Cluster map: Frozen` while the stock map (in Off, an
 empty centre) shows.
 
-To remove, remove the app in the Store, then the Waze tool, which reverts
-the patch.
-
-## Languages
+### Languages
 
 The app is in the head unit's display language, every one the iDrive 7 HMI
 offers: English (UK, US), German, Dutch (also Flemish), Danish, Swedish,
@@ -59,7 +181,7 @@ the RHMI text files, which hold the tile's name and the Logs page's title.
 `node tools/test_i18n.js` checks that every language has every word with
 the same `{n}`, and every HMI language its text file.
 
-## Where the map shows
+### Where the map shows
 
 **Show on** in General chooses: **Cluster** (the default), **HUD
 (experimental)**, **Cluster and HUD (experimental)** or **Off**. Off
@@ -68,8 +190,7 @@ the cluster and the HUD at once, without a reconnect or a restart, and both
 show BMW's own content again, for a phone that keeps sending its map after
 the route ends. Choosing a display again shows the map with the phone's
 next frame. The choice is kept for the next start; Remove patch turns the
-feature off altogether. HUD support was contributed by [eroobeeroo](https://github.com/eroobeeroo), and
-the choice of both or one follows [wesleyredhat](https://github.com/wesleyredhat)'s.
+feature off altogether.
 With both, the HUD gets up to half the upload bandwidth, only what it uses;
 alone, all of it. On the HUD the frames are scaled on the head unit to the
 size shown, the corners are rounded and a night map's background is made
@@ -80,21 +201,19 @@ With the map on the HUD only, the cluster shows BMW's own content. If the
 instrument cluster restarts right after the HUD map shows, twice, the HUD
 map is disabled; the cluster's map keeps working.
 
-## Driver profiles
+### Driver profiles
 
 Show on, the HUD map's size and its position are shared by every driver
 profile. **Own settings for this driver**, under Show on, gives the driver
 profile in use its own copy of them, which it then changes on its own; the
 head unit switches to them whenever it switches to that profile. Unticked,
-the profile goes back to the shared settings. The idea and the way the app
-reads the profile come from [eroobeeroo](https://github.com/eroobeeroo)'s
-#41. The app reads the profile in use from the head unit
+the profile goes back to the shared settings. The app reads the profile in use from the head unit
 (`SessionManager.currentUserAccountReference`) every 5 s and goes by a
 profile once two reads agree; a read with no profile changes nothing. Until
 then the checkbox is greyed; on a head unit without that field the shared
 settings apply.
 
-## The page
+### The page
 
 One `LT_State_Wide` list in four sections, each under a header row
 (`LT_Label_Header_1Row`, which the controller passes over): General, HUD,
@@ -195,7 +314,7 @@ runs (right after the install), the pending patches are read from
 `/dev/shm/waze-on-cluster/aa-pending` (Android Auto); a marker with
 another boot's id is done, one without a boot id counts.
 
-## The sockets
+### The sockets
 
 Unix stream sockets, newline-delimited JSON, group `tm_oap_app`. The app
 holds the first two while one of its pages is visible and the third while
@@ -231,7 +350,7 @@ when it closes them.
 A patch with another sink, panel, size (not `1088x480`) or safe area (not
 `504x368+286+72`) shows `Status: Update needed`.
 
-## Build and test
+### Build and test
 
 ```sh
 node tools/test_control.js           # the socket client against fake sockets
@@ -265,6 +384,6 @@ Enter starts or stops a fake CarPlay stream.
 | `tools/` | build, fakes, tests, icon |
 | `package/` | the package tree (manifest, RHMI UI, config, CHANGELOG) |
 
-## License
+### License
 
 GPL-3.0-or-later (`LICENSE`). Third-party files keep their own licenses.

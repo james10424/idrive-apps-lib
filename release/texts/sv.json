@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze i kombiinstrumentet",
-    "description": "Visar CarPlay- eller Android Auto-kartan i kombiinstrumentet: en root-hjälpare tillämpar de reversibla carplay- och aapd-patcharna där var och en stöds, och inspelningen, som körs från start, avkodar kartans H.264-video och ritar den via kombiinstrumentets renderare så länge strömmen flödar"
+    "description": "Kör kartan för Waze i kombiinstrumentet i bakgrunden. Installeras med appen Waze i kombiinstrumentet, som du styr den från."
   },
   "robertn_waze_cluster": {
     "title": "Waze i kombiinstrumentet",
-    "description": "Visar CarPlay-Waze-kartan i kombiinstrumentet: aktivera patchen från HMI:n så följer kartan CarPlay"
+    "description": "Visar CarPlay- eller Android Auto-kartan i kombiinstrumentet och, om du vill, på HUD. På bilar som stöds slås den på av sig själv efter installationen och en omstart av huvudenheten."
   }
 }

@@ -48,23 +48,35 @@ void AtlasScaler::Axis::build(uint32_t src, uint32_t dst)
     }
 }
 
-bool AtlasScaler::configure(uint32_t w, uint32_t h, uint32_t dw, uint32_t dh, unsigned level_bits)
+bool AtlasScaler::configure(uint32_t w, uint32_t h, uint32_t dw, uint32_t dh, unsigned level_bits, uint32_t crop_x,
+                            uint32_t crop_y, uint32_t crop_w, uint32_t crop_h)
 {
-    if (!w || !h || !dw || !dh || w % 2 || h % 2 || dw % 2 || dh % 2 || dw > w || dh > h || level_bits > 3) {
+    if (!crop_w) {
+        crop_x = crop_y = 0;
+        crop_w = w;
+        crop_h = h;
+    }
+    if (!w || !h || !dw || !dh || w % 2 || h % 2 || dw % 2 || dh % 2 || !crop_h || (crop_x | crop_y | crop_w | crop_h) % 2 ||
+        (uint64_t)crop_x + crop_w > w || (uint64_t)crop_y + crop_h > h || dw > crop_w || dh > crop_h || level_bits > 3) {
         dw_ = dh_ = 0;
         return false;
     }
-    if (w == w_ && h == h_ && dw == dw_ && dh == dh_ && level_bits == bits_)
+    if (w == w_ && h == h_ && dw == dw_ && dh == dh_ && level_bits == bits_ && crop_x == crop_x_ && crop_y == crop_y_ &&
+        crop_w == crop_w_ && crop_h == crop_h_)
         return true;
     w_ = w;
     h_ = h;
     dw_ = dw;
     dh_ = dh;
+    crop_x_ = crop_x;
+    crop_y_ = crop_y;
+    crop_w_ = crop_w;
+    crop_h_ = crop_h;
     bits_ = level_bits;
-    yx_.build(w, dw);
-    yy_.build(h, dh);
-    cx_.build(w / 2, dw / 2);
-    cy_.build(h / 2, dh / 2);
+    yx_.build(crop_w, dw);
+    yy_.build(crop_h, dh);
+    cx_.build(crop_w / 2, dw / 2);
+    cy_.build(crop_h / 2, dh / 2);
     return true;
 }
 
@@ -112,13 +124,13 @@ void AtlasScaler::scale(const uint8_t *src, std::vector<uint8_t> *dst)
 {
     dst->resize(dst_bytes());
     uint8_t *d = dst->data();
-    /* Y */
-    plane(src, w_, h_, d, dw_, yx_, yy_);
+    /* Y, from the crop's top-left */
+    plane(src + (size_t)crop_y_ * w_ + crop_x_, w_, crop_h_, d, dw_, yx_, yy_);
     /* U and V, side by side under Y */
-    const uint8_t *su = src + (size_t)w_ * h_, *sv = su + w_ / 2;
+    const uint8_t *su = src + (size_t)w_ * h_ + (size_t)(crop_y_ / 2) * w_ + crop_x_ / 2, *sv = su + w_ / 2;
     uint8_t *du = d + (size_t)dw_ * dh_, *dv = du + dw_ / 2;
-    plane(su, w_, h_ / 2, du, dw_, cx_, cy_);
-    plane(sv, w_, h_ / 2, dv, dw_, cx_, cy_);
+    plane(su, w_, crop_h_ / 2, du, dw_, cx_, cy_);
+    plane(sv, w_, crop_h_ / 2, dv, dw_, cx_, cy_);
     if (black_bg_)
         key_background(d);
     if (radius_) {
@@ -262,7 +274,8 @@ ScaleWorker::~ScaleWorker()
 
 bool ScaleWorker::submit(std::vector<uint8_t> *atlas, uint64_t id, const ScaleShape &shape)
 {
-    if (!idle() || shape.dw > shape.w || shape.dh > shape.h || atlas->size() != (size_t)shape.w * (shape.h + shape.h / 2))
+    if (!idle() || shape.dw > (shape.crop_w ? shape.crop_w : shape.w) || shape.dh > (shape.crop_w ? shape.crop_h : shape.h) ||
+        atlas->size() != (size_t)shape.w * (shape.h + shape.h / 2))
         return false;
     s_->in.swap(*atlas);
     s_->id = id;
@@ -310,7 +323,8 @@ void ScaleWorker::run(std::shared_ptr<State> s)
         }
         if (s->made != s->shape || !s->scaler.configured()) {
             s->made = ScaleShape();
-            if (s->scaler.configure(s->shape.w, s->shape.h, s->shape.dw, s->shape.dh, s->shape.level_bits)) {
+            if (s->scaler.configure(s->shape.w, s->shape.h, s->shape.dw, s->shape.dh, s->shape.level_bits,
+                                    s->shape.crop_x, s->shape.crop_y, s->shape.crop_w, s->shape.crop_h)) {
                 s->scaler.set_corner_radius(s->shape.radius);
                 s->scaler.set_black_background(s->shape.black);
                 s->made = s->shape;

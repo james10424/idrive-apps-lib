@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze im Kombiinstrument",
-    "description": "Zeigt die CarPlay- oder Android-Auto-Karte im Kombiinstrument: Ein Root-Helfer wendet die umkehrbaren carplay- und aapd-Patches an, wo sie jeweils unterstützt werden, und die ab dem Start laufende Erfassung dekodiert das H.264-Video der Karte und zeichnet es über den Kombi-Renderer, sobald der Stream fließt"
+    "description": "Betreibt die Karte von Waze im Kombiinstrument im Hintergrund. Wird mit der App Waze im Kombiinstrument installiert, über die Sie es steuern."
   },
   "robertn_waze_cluster": {
     "title": "Waze im Kombiinstrument",
-    "description": "Bringt die CarPlay-Waze-Karte ins Kombiinstrument: Patch im HMI aktivieren, und die Karte folgt CarPlay"
+    "description": "Zeigt die CarPlay- oder Android-Auto-Karte im Kombiinstrument und auf Wunsch im HUD. Bei unterstützten Fahrzeugen schaltet sie sich nach der Installation und einem Neustart der Headunit von selbst ein."
   }
 }

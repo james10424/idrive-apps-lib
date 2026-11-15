@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Robert Nisipeanu
 /* Host test of AtlasScaler (atlas_scale.h): sizes, flat planes stay flat and
  * U, V and Y never mix, a 2:1 scale is the exact 2x2 average, non-integer
- * ratios keep a gradient's mean, rounding to level bits, refusals, and the
- * time a 1088x480 frame takes to scale to the HUD's sizes. */
+ * ratios keep a gradient's mean, rounding to level bits, refusals, a crop
+ * (exact 1:1, scaled as the part cut out first), and the time a 1088x480
+ * frame takes to scale to the HUD's sizes. */
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -170,6 +171,39 @@ int main()
         kd.set_black_background(true);
         kd.scale(day.data(), &out);
         ok("black background: a day map left alone", out[20 * 452 + 20] == 200);
+    }
+
+    {
+        /* a crop (a host's part of the map): 1:1 it is exactly that part,
+         * Y and both chroma planes; scaled, it is the scale of that part
+         * cut out first */
+        std::vector<uint8_t> f(1088 * 720);
+        for (size_t i = 0; i < f.size(); i++)
+            f[i] = (uint8_t)((i * 7 + i / 1088 * 3) & 0xff);
+        AtlasScaler cs;
+        ok("crop: refused odd, outside the frame, or smaller than the output",
+           !cs.configure(1088, 480, 560, 400, 0, 263, 40, 560, 400) &&
+               !cs.configure(1088, 480, 560, 400, 0, 600, 40, 560, 400) &&
+               !cs.configure(1088, 480, 564, 400, 0, 264, 40, 560, 400));
+        ok("crop: 560x400 at 264,40, 1:1", cs.configure(1088, 480, 560, 400, 0, 264, 40, 560, 400) &&
+                                               cs.dst_bytes() == 560u * 600);
+        cs.scale(f.data(), &out);
+        std::vector<uint8_t> cut(560 * 600);
+        for (uint32_t r = 0; r < 400; r++)
+            for (uint32_t c = 0; c < 560; c++) cut[r * 560 + c] = f[(r + 40) * 1088 + 264 + c];
+        for (uint32_t r = 0; r < 200; r++)
+            for (uint32_t c = 0; c < 280; c++) {
+                cut[(400 + r) * 560 + c] = f[(480 + 20 + r) * 1088 + 132 + c];
+                cut[(400 + r) * 560 + 280 + c] = f[(480 + 20 + r) * 1088 + 544 + 132 + c];
+            }
+        ok("crop: 1:1 is exactly that part of Y, U and V", out == cut);
+        AtlasScaler half, whole;
+        half.configure(1088, 480, 280, 200, 0, 264, 40, 560, 400);
+        whole.configure(560, 400, 280, 200, 0);
+        std::vector<uint8_t> a, b;
+        half.scale(f.data(), &a);
+        whole.scale(cut.data(), &b);
+        ok("crop: scaled is the scale of the part cut out", a == b);
     }
 
     const struct { uint32_t w, h; } sizes[] = {{452, 200}, {560, 244}, {680, 300}, {800, 352}, {320, 140}};

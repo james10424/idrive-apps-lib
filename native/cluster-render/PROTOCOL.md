@@ -35,7 +35,7 @@ lacks.
 |---|---|
 | `hello` | `app` (a name for the logs), `proto` 1 |
 | `layer` | `ref`, `target`, `kind` (`video`, `image`, `effect`, `mesh`), the layer fields, and the kind's fields |
-| `asset` | `ref`, `target`, `format` (`rgba8` default, `r8`, `etc2rgba`: below), `w`, `h` (1-2048, within one frame message), `sampling` (`nearest` default, `bilinear`), `wrap` (`clamp` default, `repeat`) |
+| `asset` | `ref`, `target`, `format` (`rgba8` default, `r8`, `etc2rgba`, `etc2rgb`: below), `w`, `h` (1-2048, within one frame message), `sampling` (`nearest` default, `bilinear`), `wrap` (`clamp` default, `repeat`) |
 | `set` | `ref` and any layer field; for a mesh layer also its camera and projection fields (not `projection` itself) |
 | `uniform` | `ref`, `name`, `v`, optional `type`, `part` ([below](#uniforms)); effect layers and mesh parts |
 | `bind` | `ref` (an effect or mesh layer), `part` (a mesh layer's), `sampler` (the shader's `sampler2D`), `asset` (an asset's ref on the same target); binds again when sent again |
@@ -43,8 +43,9 @@ lacks.
 | `transform` | `ref`, `part`, any of `tx`, `ty`, `tz`, `rx`, `ry`, `rz` (degrees, right-handed), `sx`, `sy`, `sz` |
 | `animate` | `ref`, `part`, `anim`, `property`, `name`, `keys`, `loop`, `interp` ([below](#animations)) |
 | `stop` | `ref`, `anim` |
-| `scene` | `ref`, `target`, `file`, `res`, `sha256`, `contend` ([below](#scene-files)); sent again with its ref, another file in place |
+| `scene` | `ref`, `target`, `file`, `res`, `sha256`, `contend`, `layers`, `layers_order` ([below](#scene-files)); sent again with its ref, another file in place |
 | `edit` | `ref` (a scene), `lines` ([below](#scene-edits)) |
+| `host` | `ref` (a scene with `layers` 1), `target`, `x`, `y`, `w`, `h`, `src_x`, `src_y`, `src_w`, `src_h`, `shown` ([below](#hosting-another-target)) |
 | `drop` | `ref`: a layer, a scene, or an asset no layer samples (else refused: `asset in use`) |
 | `repeat` | `ref` (a video layer): a frame whose atlas is the layer's last frame's, byte for byte, in place of that frame; to a service whose hello has `repeat` 1 |
 | `status` | — (answered by a `status` event) |
@@ -141,21 +142,56 @@ Frames (`F`):
 - **image**: RGBA rows, straight alpha. With rects, each rect's rows packed
   one rect after another; with none, the whole image.
 - **asset**: the same, RGBA or one byte a pixel (`r8`).
-- **asset** `etc2rgba`: no rects, and the whole texture once: ETC2 RGBA
-  blocks with EAC alpha (`GL_COMPRESSED_RGBA8_ETC2_EAC`), 16 bytes a 4x4
-  block, each the alpha block then the colour block, blocks in rows top to
-  bottom, `(w/4) * (h/4) * 16` bytes; `w` and `h` multiples of 4. A second
-  frame is refused (`an etc2rgba asset is sent once`). A quarter of `rgba8`'s
-  bytes, and charged once to the pixel memory (no rectangle scratch).
-  If the renderer refuses its texture, every layer sampling it is in `error`
-  with `reason` `asset N: the renderer refused its WxH etc2rgba texture`.
-  `tools/etc2_test/etc2_encode.py` encodes one.
+- **asset** `etc2rgba`, `etc2rgb`: no rects, and the whole texture once,
+  `w` and `h` multiples of 4, blocks in rows top to bottom:
+  - `etc2rgba`: ETC2 RGBA with EAC alpha (`GL_COMPRESSED_RGBA8_ETC2_EAC`),
+    16 bytes a 4x4 block, each the alpha block then the colour block:
+    `(w/4) * (h/4) * 16` bytes, a quarter of `rgba8`'s.
+  - `etc2rgb`: opaque ETC2 RGB (`GL_COMPRESSED_RGB8_ETC2`), 8 bytes a 4x4
+    block: `(w/4) * (h/4) * 8` bytes, an eighth of `rgba8`'s. Every pixel is
+    drawn with alpha 1.
+
+  A second frame is refused (`an etc2rgba asset is sent once`, or `etc2rgb`). Charged
+  once to the pixel memory (no rectangle scratch). If the renderer refuses
+  its texture, every layer sampling it is in `error` with `reason`
+  `asset N: the renderer refused its WxH etc2rgba texture` (or `etc2rgb`).
+  `tools/etc2_test/etc2_encode.py` encodes both.
 
 An asset is not drawn and never makes its target wanted. The service keeps
 its pixels, writes them whole into each new scene of its target and in place
 as they change, before the layers, within the shared upload budget. A layer
 that samples an asset is stalled until the asset has pixels, and waits while
 the asset's buffer does not hold them whole.
+
+### Choosing a pixel format
+
+| Format | Bytes a pixel | Alpha | Changed after it is sent |
+|---|---|---|---|
+| `rgba8` (image layer or asset) | 4 | yes | yes, by rectangles |
+| `r8` (asset) | 1 | no: one channel, read as `.r` (masks, glyphs) | yes, by rectangles |
+| `etc2rgba` (asset) | 1 | yes | no: sent once |
+| `etc2rgb` (asset) | 0.5 | no, opaque | no: sent once |
+| video layer (4:2:0 atlas) | 1.5 | no | every frame, only the tiles that changed |
+
+The cluster cannot change a compressed texture in place, on iDrive 7 or
+iDrive 8: only uncompressed textures take updates. New pixels for an
+`etc2rgba` or `etc2rgb` asset mean a new asset sent whole, which costs its
+full size in upload and has not been tried per frame.
+
+- **Artwork sent once, then animated** by moving, scaling, fading or
+  switching sprite-sheet frames: a compressed asset, preloaded
+  ([Animating preloaded assets](#animating-preloaded-assets)).
+- **Pixels that change often** (drawn per frame, changing text, partial
+  updates): `rgba8` or `r8`, updated by rectangle, or an effect shader that
+  draws them.
+- **Live video:** a video layer.
+
+The trade-off is two limits all clients share: the service's 16 MB of pixel
+memory (image layers and uncompressed assets count twice their size,
+compressed assets once, a video layer about four times its 4:2:0 frame; mesh
+geometry counts too) and the upload cap (5500 KB/s as shipped, lower while
+the link struggles: the `budget` event). Compressed assets spare both;
+uncompressed ones cost upload at each change.
 
 ### Shaders
 
@@ -221,6 +257,43 @@ Values a key takes:
 
 Animations are kept, and start again when a scene is published again.
 
+### Animating preloaded assets
+
+Artwork sent once as assets is animated with no more pixels sent: an effect
+or mesh layer samples it, and a uniform, a `set` or an animation changes what
+is drawn.
+
+- **A sprite-sheet frame:** the shader samples a sub-rectangle of the asset
+  named by a uniform. Each `uniform` picks another frame (a message of a few
+  dozen bytes), or an `animate` with `interp` `step` plays the frames in
+  the renderer with nothing sent per frame (up to 256 keys).
+- **Move, scale, rotate:** `set` `x`, `y`, `sx`, `sy`, `rotate`, or
+  `animate` `translate`, `scale`, `rotate`.
+- **Fade:** a uniform the shader multiplies alpha by (`opacity` is for
+  video and image layers), set or animated.
+- **Shader-driven motion:** `time` 1 gives the shader the renderer's clock.
+- **Meshes:** a part samples an asset through `bind` with `part`, with its
+  geometry's `a_texcoord`; its uniforms, transforms and animations as above.
+
+A 4x2 sheet of 128x128 frames in one 512x256 `etc2rgba` asset (131,072
+bytes, sent once), played at 12 frames a second and turning:
+
+```
+{"op":"asset","ref":1,"target":"panel","format":"etc2rgba","w":512,"h":256}
+F ref 1, no rects, the sheet's 131,072 bytes
+{"op":"layer","ref":2,"target":"panel","kind":"effect","x":800,"y":300,"w":128,"h":128,
+ "fs":"precision mediump float;uniform sampler2D u_sheet;uniform vec4 u_cell;uniform float u_alpha;varying vec2 v_uv;void main(){vec4 c=texture2D(u_sheet,u_cell.xy+v_uv*u_cell.zw);gl_FragColor=vec4(c.rgb,c.a*u_alpha);}"}
+{"op":"bind","ref":2,"sampler":"u_sheet","asset":1}
+{"op":"uniform","ref":2,"name":"u_alpha","v":"1"}
+{"op":"animate","ref":2,"anim":1,"property":"uniform","name":"u_cell","interp":"step","loop":1,
+ "keys":"0:0,0,0.25,0.5 83:0.25,0,0.25,0.5 167:0.5,0,0.25,0.5 250:0.75,0,0.25,0.5 333:0,0.5,0.25,0.5 417:0.25,0.5,0.25,0.5 500:0.5,0.5,0.25,0.5 583:0.75,0.5,0.25,0.5 667:0,0,0.25,0.5"}
+{"op":"animate","ref":2,"anim":2,"property":"rotate","loop":1,"keys":"0:0 4000:360"}
+```
+
+`u_cell` is the frame's top-left and size in texture coordinates (x, y, w,
+h). Keep frames on 4-pixel boundaries for the compressed formats, and with
+`bilinear` sampling leave a pixel of gap between them.
+
 ### Scene files
 
 On a target with `<target>_scene_files` 1 (cluster-render.conf; 0, off, on
@@ -236,6 +309,8 @@ changed live by edits ([below](#scene-edits)).
 | `res` | its resource files, absolute paths separated by spaces (at most 16; none: empty) |
 | `sha256` | the SHA-256 of `file`, then of each file of `res` in its order: hex, separated by spaces |
 | `contend` | as a layer's |
+| `layers` | 0 (default): the target's layers wait while the file is there; 1: they are drawn over it ([below](#layers-over-a-scene-file)) |
+| `layers_order` | with `layers` 1: the render order the layers' passes start at; left out: one past the file's highest |
 
 The service runs as `hmi_5000` and any client may name a file, and a
 malformed file can take the RAMSES client down with the service, so it takes
@@ -253,7 +328,8 @@ the scene id it was saved with, which must be the target's
 
 A target has at most one scene (another is refused: `the target has a
 scene file already`). While it is there and has not failed to load, the
-target is wanted, as by a layer that wants it, and every layer on it is
+target is wanted, as by a layer that wants it, and, unless the scene has
+`layers` 1, every layer on it is
 `waiting` with `reason` `scene <ref>` (the client's own scene) or
 `scene of <app>`, as below an exclusive layer. The scene's `layer` events:
 `waiting` (the target not shown yet: its state and reason, the `target`
@@ -269,7 +345,7 @@ again with its new scene.
 
 `scene` sent again with the scene's ref (its target unchanged) loads the
 new file in place: the scene is unpublished and published again with the
-same id while the target keeps its slot, and its kept edits go. A `layer`
+same id while the target keeps its slot, and its kept edits (and hosts) go. A `layer`
 event follows even when the state is the same.
 
 ### Scene edits
@@ -304,22 +380,72 @@ why. A line that changes nothing (no object matches, no mesh has the
 uniform, not a regular expression) is reported the same way, once per
 loaded scene.
 
+### Layers over a scene file
+
+A scene with `layers` 1 has the layers on its target, every client's, drawn
+over the file: in the file's own scene, with a camera and render passes of
+the service's that never clear, from render order `layers_order` up, one
+order a pass (the quads between two mesh layers share one; each mesh layer
+takes one), or from one past the file's highest pass without it. A pass of
+the file ordered above all of them is drawn over the layers: the file's
+owner can keep frame lines, an edge that fades into the file's artwork, or
+a shape cut out of it on top of what the layers draw. The layers are
+arranged, faded, written and flushed as on any target, the scene's edits
+in the same flush, within the same budget; the file's resources are charged
+as without layers. The edits never wait for the layers: while a layer holds
+the target's flushes (a buffer left half written, an uncover the budget
+defers), the flush goes for the edits all the same and the layers' writes
+count as not gone (a video writes whole next), so what a layer wrote may
+show half done meanwhile. `scene` sent again with `layers` 0 publishes the
+file again without them, and they wait. A display that draws nothing over
+files (iDrive 8) leaves the layers waiting, the file shown, and logs why.
+
+### Hosting another target
+
+A scene with `layers` 1 may show another target's content: `host` tells
+every client that `target` is hosted in the scene's target, at `x`, `y`,
+`w`, `h` there (inside it), and which part of `target` it shows: `src_x`,
+`src_y`, `src_w`, `src_h` in `target`'s pixels (inside it; all four or none:
+none is all of it), stretched over the rect; `shown` 0 shows it nowhere.
+The service only keeps this and tells the clients (the `host` event); it
+moves nothing. A producer of `target` that follows it puts its layer in the
+scene's target where that part of its own drawing lands in the rect, with
+only that part of its picture, and nothing on `target`, so `target`'s slot
+is let go; with `shown` 0 it has no layer at all. A producer that does not
+know the event keeps drawing on `target` as before. The event says a target
+is hosted only while the scene can draw it: its file published as the
+target's scene with the layers over it; at other times (not published yet,
+published again, a display that draws no layers over files) it says the
+target is not hosted, so a producer stays where it can be seen. `host` sent
+again with the same `target` replaces it. A target is hosted by one scene at
+most (another's is refused: `target T is hosted by another scene`), never
+by a scene on itself. A `host` refused (the `error` event names its
+`target`) ends that scene's host of that target, if it had one. Hosting ends
+when the scene goes (`drop`, its client gone), is sent again (another file,
+or `layers` 0: its hosts go with its edits), fails to load, or the display
+draws no layers over it. The client libraries keep a scene's `host`
+messages and send them again after a reconnect, except one the service
+refused or one whose scene was sent again since, and send none for a scene
+without `layers` or for the scene's own target.
+
 ## Service to client
 
 Every JSON message has `ev`.
 
 | ev | Fields | When |
 |---|---|---|
-| `hello` | `proto`, `backend` (`id7`, or `id8` on iDrive 8), `targets` (`map:1088x480,panel:1920x720,hud:800x480`; on iDrive 8 `map:874x749,hud:353x203,guide:702x213,widget:2240x896,popup:2240x896`), `repeat` (1: takes `repeat`) | after the client's hello |
+| `hello` | `proto`, `backend` (`id7`, or `id8` on iDrive 8), `targets` (`map:1088x480,panel:1920x720,hud:800x480`; on iDrive 8 `map:874x749,hud:353x203,guide:702x213,widget:2240x896,popup:2240x896`, then any a drop-in adds, README.md "iDrive 8"), `repeat` (1: takes `repeat`) | after the client's hello |
 | `layer` | `ref`, `state`, `reason` | the layer's state changed |
 | `target` | `target`, `state`, `holder`, `reason`, `retry_in_ms`, `rendering`, `guide_disabled`, `disabled` | a target's state changed |
 | `budget` | `cap_kb_per_s`, `max_kb_per_s`, `floor_kb_per_s`, `reason` | the upload cap changed |
-| `error` | `op`, `ref`, `reason`; `line` for an edit line | a message was refused, or an edit line changed nothing |
+| `error` | `op`, `ref`, `reason`; `line` for an edit line; `target` for a `host` | a message was refused, or an edit line changed nothing |
 | `status` | `text` | after a status request; among its lines, one for each slot the KOMBI's latest reports name: `slot 0x203 status 2: 0x1000400 class 0 map 1, ...` (each row's content, class and map status) |
+| `host` | `target`, `into` (the hosting scene's target; empty: `target` is not hosted any more), `shown`, `x`, `y`, `w`, `h`, `src_x`, `src_y`, `src_w`, `src_h` | after the client's hello for each hosted target, and to every client when a host comes, changes or ends ([above](#hosting-another-target)) |
 
 Layer states (a scene's too, [above](#scene-files)): `shown`; `waiting`
 (its target is not shown yet or is taken, an asset it samples is not
-written yet, or a scene file is on its target; `reason` says which);
+written yet, or a scene file without `layers` 1 is on its target; `reason`
+says which);
 `suspended` (below an exclusive layer); `stalled` (no content yet: no frame,
 no part with geometry, an asset it samples without pixels; or a video's
 frames stopped); `hidden`; `error` (the renderer refused it). Target states:
@@ -333,12 +459,8 @@ someone else holds the slot, and `retry_in_ms` when on a timer),
 (the display's renderer is subscribed to its scene), `checking` (not
 subscribed yet; after 1.5 s shown the service asks for the slot again),
 `unobservable` (the service cannot see subscriptions); `none` otherwise.
-`guide_disabled`: 1 while a guide hold following the target (`map`) is
-disabled by the mapping guard or by the display refusing its slot, so the
-stock HMI's guidance box shows whatever the layers' `guide_hold`; else 0.
-`disabled`: 1 while the target's own mapping is disabled by the mapping
-guard (the HUD's, README.md "Mapping guard"): it is never asked for, its
-layers stay waiting; else 0.
+`guide_disabled` and `disabled` are always 0; no target or guide hold is
+ever turned off for good.
 
 On a head unit that refuses the service (README.md "Supported head
 units") no `hello` comes: a `status` request gets `text` `not supported on

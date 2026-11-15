@@ -20,11 +20,10 @@ User=hmi_5000
 Group=hmi_5000
 RuntimeDirectory=cluster-render
 RuntimeDirectoryMode=0755
-# The log file's directory (log_file) and the mapping guard's (guard_path),
-# on /var/opt so they outlive reboots, made as root ("+"); a failure ("-")
-# only leaves the service without the file or the guard's memory across
-# restarts.
-ExecStartPre=-+/bin/sh -c 'mkdir -p /var/opt/cluster-render/log /var/opt/cluster-render/state && chown hmi_5000:hmi_5000 /var/opt/cluster-render/log /var/opt/cluster-render/state'
+# The log file's directory (log_file), on /var/opt so it outlives reboots,
+# made as root ("+"); a failure ("-") only leaves the service without the
+# file.
+ExecStartPre=-+/bin/sh -c 'mkdir -p /var/opt/cluster-render/log && chown hmi_5000:hmi_5000 /var/opt/cluster-render/log'
 ExecStart=/var/opt/cluster-render/current/cluster-render -c /var/opt/cluster-render/current/cluster-render.conf
 Restart=on-failure
 # At boot RAMSES or DCSM may not be up yet; 5 s keeps the retries clear of

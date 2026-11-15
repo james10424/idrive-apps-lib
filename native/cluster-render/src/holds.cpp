@@ -103,7 +103,6 @@ bool load_holds(const HoldSettings &cfg, const std::vector<uint64_t> &allowed, s
         t.take_over_stock = true;
         t.follows = "map";
         t.take_over_contents = takes;
-        t.strike_limit = 2;
         for (const std::vector<TargetSpec> *v : {targets, &holds})
             for (const TargetSpec &o : *v) {
                 if (o.scene_id == t.scene_id)
@@ -127,26 +126,22 @@ bool load_holds(const HoldSettings &cfg, const std::vector<uint64_t> &allowed, s
 
 bool hud_rules(TargetSpec *t, std::string *why)
 {
-    if (t->slot != kHudSlot || (t->scene_id != kHudScene && t->scene_id != kHudOwnScene) || t->take_over_stock) {
-        char b[240];
-        std::snprintf(b, sizeof b, "only slot 0x%llx with scene 0x%llx or 0x%llx, without hud_take_over_stock "
-                      "(hud_slot 0x%llx, hud_scene_id 0x%llx%s)",
-                      (unsigned long long)kHudSlot, (unsigned long long)kHudScene, (unsigned long long)kHudOwnScene,
-                      (unsigned long long)t->slot,
+    if (t->slot != kHudSlot || t->scene_id != kHudScene || t->take_over_stock) {
+        char b[200];
+        std::snprintf(b, sizeof b, "only slot 0x%llx with scene 0x%llx, without hud_take_over_stock (hud_slot 0x%llx, "
+                      "hud_scene_id 0x%llx%s)",
+                      (unsigned long long)kHudSlot, (unsigned long long)kHudScene, (unsigned long long)t->slot,
                       (unsigned long long)t->scene_id, t->take_over_stock ? ", hud_take_over_stock 1" : "");
         *why = b;
         return false;
     }
     t->share = true;
-    t->strike_limit = 2;
     return true;
 }
 
 bool fallback_rules(TargetSpec *t, const std::string &fallback, const std::vector<uint64_t> &allowed,
                     std::string *err)
 {
-    if (t->scene_id != kHudScene)
-        t->strike_limit = 2;
     if (fallback.empty())
         return true;
     uint64_t id = 0;

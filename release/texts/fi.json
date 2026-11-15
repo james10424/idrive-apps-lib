@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze mittaristossa",
-    "description": "Näyttää CarPlay- tai Android Auto -kartan mittaristossa: root-apuohjelma asentaa palautettavat carplay- ja aapd-korjaukset, missä kumpikin on tuettu, ja käynnistyksestä asti toimiva kaappaus purkaa kartan H.264-videon ja piirtää sen mittariston piirtäjän kautta aina, kun videovirtaa vastaanotetaan"
+    "description": "Ajaa Waze mittaristossa -kartan taustalla. Asentuu Waze mittaristossa -sovelluksen mukana, ja sitä ohjataan sovelluksesta."
   },
   "robertn_waze_cluster": {
     "title": "Waze mittaristossa",
-    "description": "Tuo CarPlayn Waze-kartan mittaristoon: ota korjaus käyttöön HMI:stä, ja kartta seuraa CarPlayta"
+    "description": "Näyttää CarPlayn tai Android Auton kartan mittaristossa ja halutessasi HUD-näytössä. Tuetuissa autoissa se kytkeytyy päälle itsestään asennuksen ja pääyksikön uudelleenkäynnistyksen jälkeen."
   }
 }

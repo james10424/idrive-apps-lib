@@ -174,6 +174,7 @@ class ClusterRender extends EventEmitter {
                 if ((l.kind === 'asset') !== assets) return;
                 this._send(this._layerMsg(ref, l));
                 if (l.edits.size) this._send({ op: 'edit', ref: ref, lines: Array.from(l.edits.values()).join('\n') });
+                l.hosts.forEach((m) => this._send(m));
                 l.parts.forEach((p) => {
                     this._send(p.msg);
                     if (p.geometry) this._write(p.geometry);
@@ -238,9 +239,14 @@ class ClusterRender extends EventEmitter {
         } else if (ev.ev === 'budget') {
             this.emit('budget', ev.cap_kb_per_s, ev.max_kb_per_s, ev.reason);
         } else if (ev.ev === 'error') {
+            /* a host refused is not sent again after a reconnect */
+            const l = ev.op === 'host' ? this.layers.get(ev.ref) : null;
+            if (l && l.hosts) l.hosts.delete(ev.target);
             this.emit('refused', ev.op, ev.ref, ev.reason, ev.line);
         } else if (ev.ev === 'status') {
             this.emit('status', ev.text);
+        } else if (ev.ev === 'host') {
+            this.emit('host', ev.target, ev);   /* ev.into empty: not hosted any more */
         }
     }
 
@@ -287,8 +293,11 @@ class ClusterRender extends EventEmitter {
     _layerMsg(ref, l) {
         const o = l.opts;
         if (l.kind === 'scene') {
-            return { op: 'scene', ref: ref, target: o.target, file: o.file, res: (o.res || []).join(' '),
+            const m = { op: 'scene', ref: ref, target: o.target, file: o.file, res: (o.res || []).join(' '),
                 sha256: [].concat(o.sha256).join(' '), contend: flag(o.contend) };
+            if (o.layers) m.layers = 1;
+            if (o.layers && o.layers_order !== undefined) m.layers_order = o.layers_order;
+            return m;
         }
         if (l.kind === 'asset') {
             return { op: 'asset', ref: ref, target: o.target, format: o.format || 'rgba8', w: o.w, h: o.h,
@@ -332,7 +341,7 @@ class ClusterRender extends EventEmitter {
     _add(kind, opts) {
         const o = Object.assign({}, opts);
         const l = { kind: kind, opts: o, uniforms: {}, parts: new Map(), binds: {}, anims: new Map(), nextAnim: 1,
-            dirty: [], dirtyBytes: 0, whole: false, have: false, edits: new Map() };
+            dirty: [], dirtyBytes: 0, whole: false, have: false, edits: new Map(), hosts: new Map() };
         if (kind === 'scene' && !(o.file && [].concat(o.sha256 || []).length === (o.res || []).length + 1)) return 0;
         if (kind === 'image') {
             o.iw = o.iw || o.w;
@@ -342,15 +351,18 @@ class ClusterRender extends EventEmitter {
             l.ih = o.ih;
             l.bpp = 4;
         } else if (kind === 'asset') {
-            /* etc2rgba: 16 bytes a 4x4 block (1 a pixel), sent whole. */
-            l.compressed = o.format === 'etc2rgba';
+            /* etc2rgba: 16 bytes a 4x4 block, etc2rgb: 8; sent whole. */
+            const block = o.format === 'etc2rgba' ? 16 : o.format === 'etc2rgb' ? 8 : 0;
+            l.compressed = block > 0;
             l.bpp = o.format === 'r8' || l.compressed ? 1 : 4;
-            if (!(o.w > 0 && o.h > 0 && o.w <= 2048 && o.h <= 2048 && o.w * o.h * l.bpp <= 1920 * 720 * 4)) return 0;
+            if (!(o.w > 0 && o.h > 0 && o.w <= 2048 && o.h <= 2048)) return 0;
             if (l.compressed && (o.w % 4 || o.h % 4)) return 0;
+            l.bytes = l.compressed ? (o.w / 4) * (o.h / 4) * block : o.w * o.h * l.bpp;
+            if (l.bytes > 1920 * 720 * 4) return 0;
             l.iw = o.w;
             l.ih = o.h;
         }
-        if (l.bpp) l.image = Buffer.alloc(l.compressed ? (l.iw / 4) * (l.ih / 4) * 16 : l.iw * l.ih * l.bpp);
+        if (l.bpp) l.image = Buffer.alloc(l.bytes || l.iw * l.ih * l.bpp);
         const ref = this.nextRef++;
         this.layers.set(ref, l);
         if (this.sock) this._send(this._layerMsg(ref, l));
@@ -368,15 +380,41 @@ class ClusterRender extends EventEmitter {
     image(opts) { return this._add('image', opts); }
     effect(opts) { return this._add('effect', opts); }
     mesh(opts) { return this._add('mesh', opts); }
-    /* opts: target, format ('rgba8', 'r8'; 'etc2rgba', w and h
+    /* opts: target, format ('rgba8', 'r8'; 'etc2rgba', 'etc2rgb', w and h
      * multiples of 4, its blocks sent whole), w, h (up to 2048), sampling
      * ('nearest', 'bilinear'), wrap ('clamp', 'repeat'). */
     asset(opts) { return this._add('asset', opts); }
     /* A scene file as the target's scene (PROTOCOL.md "Scene files"): opts
      * target, file (an absolute path), res (its resource files' paths),
      * sha256 (an array of hex SHA-256s: the file's, then each resource
-     * file's), contend. */
+     * file's), contend; layers: true draws the target's layers over the
+     * file, layers_order the render order their passes start at. */
     scene(opts) { return this._add('scene', opts); }
+
+    /* The scene (made with layers) hosts another target (PROTOCOL.md
+     * "host"): opts target, x, y, w, h (in the scene's target), src_x,
+     * src_y, src_w, src_h (in the hosted target's pixels; sent, all four,
+     * when src_w and src_h are set, else all of it), shown. Kept by target
+     * and sent again after a reconnect, until the service refuses it or the
+     * scene is replaced; false, nothing sent, for a scene without layers or
+     * a host of its own target. */
+    host(ref, opts) {
+        const l = this.layers.get(ref);
+        /* what the service refuses whatever it holds is not sent or kept */
+        if (!l || l.kind !== 'scene' || !l.opts.layers || !opts.target || opts.target === l.opts.target) return false;
+        const m = { op: 'host', ref: ref, target: opts.target, x: opts.x, y: opts.y, w: opts.w, h: opts.h,
+            shown: flag(opts.shown !== false) };
+        /* the part: all four with src_w and src_h, else none (all of it), as the C++ client */
+        if (opts.src_w && opts.src_h) {
+            m.src_x = opts.src_x || 0;
+            m.src_y = opts.src_y || 0;
+            m.src_w = opts.src_w;
+            m.src_h = opts.src_h;
+        }
+        l.hosts.set(opts.target, m);
+        this._send(m);
+        return true;
+    }
 
     /* Another file for a scene, in place (opts as scene()'s, the target
      * kept): its kept edits go. */
@@ -386,6 +424,7 @@ class ClusterRender extends EventEmitter {
             [].concat(opts.sha256 || []).length !== (opts.res || []).length + 1) return false;
         l.opts = Object.assign({}, opts, { target: l.opts.target });
         l.edits = new Map();
+        l.hosts = new Map();   /* the service ends them with the file it replaces */
         this._send(this._layerMsg(ref, l));
         return true;
     }

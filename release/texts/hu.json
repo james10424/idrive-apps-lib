@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze a műszerfalon",
-    "description": "A CarPlay vagy Android Auto térképét a műszerfalon jeleníti meg: egy root segédprogram alkalmazza a visszavonható carplay és aapd javítást ott, ahol támogatott, a rögzítés pedig a rendszerindítástól fut, dekódolja a térkép H.264 adatfolyamát, és a műszerfal-megjelenítőn keresztül rajzolja ki, amíg az adatfolyam érkezik"
+    "description": "A háttérben futtatja a Waze a műszerfalon térképét. A Waze a műszerfalon alkalmazással együtt települ, abból vezérelhető."
   },
   "robertn_waze_cluster": {
     "title": "Waze a műszerfalon",
-    "description": "A CarPlay Waze-térképét a műszerfalra helyezi: kapcsolja be a javítást az autó kezelőfelületén, és a térkép követi a CarPlay-t"
+    "description": "Megjeleníti a CarPlay vagy Android Auto térképet a műszerfalon, és ha kéri, a HUD-on is. Támogatott autókon a telepítés és a fejegység újraindítása után magától bekapcsol."
   }
 }

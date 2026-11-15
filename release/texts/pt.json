@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze no quadrante",
-    "description": "Mostra o mapa do CarPlay ou do Android Auto no quadrante de instrumentos: um auxiliar com permissões root aplica as correções reversíveis de carplay e aapd onde cada uma é suportada, e a captura, ativa desde o arranque, descodifica o H.264 do mapa e desenha-o através do renderizador do quadrante sempre que o fluxo chega"
+    "description": "Executa em segundo plano o mapa do Waze no quadrante. É instalado com a app Waze no quadrante, a partir da qual o controla."
   },
   "robertn_waze_cluster": {
     "title": "Waze no quadrante",
-    "description": "Coloca o mapa Waze do CarPlay no quadrante de instrumentos: ative a correção no HMI e o mapa acompanha o CarPlay"
+    "description": "Mostra o mapa do CarPlay ou do Android Auto no quadrante e, se quiser, no HUD. Em carros compatíveis, liga-se sozinho depois de o instalar e reiniciar a unidade principal."
   }
 }

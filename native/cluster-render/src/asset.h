@@ -11,9 +11,9 @@
  * write leaves the buffer unlike the asset (unclean) until it is written
  * whole again; the layers sampling it are not drawn meanwhile.
  *
- * An etc2rgba asset is compressed: it is sent
- * whole, once, and each scene of its target gets an immutable texture made
- * from it at the asset's first stage there. No rectangles, no scratch. A
+ * An etc2rgba or etc2rgb asset is compressed: it is sent whole, once, and
+ * each scene of its target gets an immutable texture made from it at the
+ * asset's first stage there. No rectangles, no scratch. A
  * texture the renderer refuses leaves the asset refused(). */
 #ifndef CRS_ASSET_H
 #define CRS_ASSET_H
@@ -48,14 +48,14 @@ public:
     int target() const { return target_; }
     const AssetParams &params() const { return p_; }
     uint32_t bpp() const { return p_.format == TexFormat::R8 ? 1 : 4; }
-    bool compressed() const { return p_.format == TexFormat::ETC2RGBA; }
+    bool compressed() const { return tex_compressed(p_.format); }
     size_t bytes() const { return px_.size(); }
     /* What it holds of the service's pixel memory: its pixels, and a
      * rectangle scratch as large unless compressed. */
     uint64_t memory() const { return (uint64_t)px_.size() * (compressed() ? 1 : 2); }
     static uint64_t memory(const AssetParams &p)
     {
-        return (uint64_t)tex_bytes(p.format, p.w, p.h) * (p.format == TexFormat::ETC2RGBA ? 1 : 2);
+        return (uint64_t)tex_bytes(p.format, p.w, p.h) * (tex_compressed(p.format) ? 1 : 2);
     }
     /* Why the renderer refused its texture; empty when it did not. */
     const std::string &refused() const { return refused_; }

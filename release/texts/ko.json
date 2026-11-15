@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze 계기판 표시",
-    "description": "CarPlay 또는 Android Auto 지도를 계기판에 표시합니다. root 도우미가 되돌릴 수 있는 carplay 및 aapd 패치를 각각 지원되는 곳에 적용하고, 부팅 시부터 실행되는 캡처가 지도의 H.264를 디코딩하여 스트림이 들어올 때마다 계기판 렌더러로 그립니다"
+    "description": "Waze 계기판 표시의 지도를 백그라운드에서 실행합니다. Waze 계기판 표시 앱과 함께 설치되며, 앱에서 제어합니다."
   },
   "robertn_waze_cluster": {
     "title": "Waze 계기판 표시",
-    "description": "CarPlay의 Waze 지도를 계기판에 표시합니다. HMI에서 패치를 켜면 지도가 CarPlay를 따라갑니다"
+    "description": "CarPlay 또는 Android Auto 지도를 계기판에 표시하고, 선택하면 HUD에도 표시합니다. 지원되는 차량에서는 설치 후 헤드 유닛을 재시작하면 자동으로 켜집니다."
   }
 }

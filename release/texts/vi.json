@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze trên bảng đồng hồ",
-    "description": "Hiển thị bản đồ CarPlay hoặc Android Auto trên bảng đồng hồ: một trình trợ giúp root áp dụng các bản vá carplay và aapd có thể hoàn tác ở nơi mỗi bản vá được hỗ trợ, còn tiến trình thu hình chạy từ lúc khởi động sẽ giải mã H.264 của bản đồ và vẽ nó qua trình hiển thị bảng đồng hồ mỗi khi có luồng dữ liệu"
+    "description": "Chạy bản đồ của Waze trên bảng đồng hồ ở chế độ nền. Được cài cùng ứng dụng Waze trên bảng đồng hồ, nơi bạn điều khiển nó."
   },
   "robertn_waze_cluster": {
     "title": "Waze trên bảng đồng hồ",
-    "description": "Đưa bản đồ Waze của CarPlay lên bảng đồng hồ: bật bản vá từ HMI và bản đồ sẽ theo CarPlay"
+    "description": "Hiển thị bản đồ CarPlay hoặc Android Auto trên bảng đồng hồ, và trên HUD nếu bạn chọn. Trên xe được hỗ trợ, tự bật sau khi cài đặt và khởi động lại hệ thống."
   }
 }

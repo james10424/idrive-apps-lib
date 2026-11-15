@@ -1,7 +1,7 @@
 {
   "name": "robertn_waze_cluster",
-  "version": "0.6.7",
-  "description": "Puts the CarPlay Waze map on the instrument cluster: enable the patch from the HMI and the map follows CarPlay",
+  "version": "0.6.8",
+  "description": "Shows the CarPlay or Android Auto map on the instrument cluster, and on the HUD if you choose. On supported cars it turns on by itself after you install it and restart the head unit.",
   "private": false,
   "main": "javascript/runner.js",
   "oapAppSettings": {

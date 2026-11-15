@@ -5,10 +5,10 @@
   },
   "waze-on-cluster": {
     "title": "Waze メーター表示",
-    "description": "CarPlayまたはAndroid Autoの地図をメーターに表示します。rootヘルパーが元に戻せるcarplayとaapdのパッチをそれぞれ対応する環境で適用し、起動時から動作するキャプチャが地図のH.264をデコードして、ストリームが流れている間はメーターレンダラーで描画します"
+    "description": "Waze メーター表示の地図をバックグラウンドで動かします。Waze メーター表示アプリと一緒にインストールされ、アプリから操作します。"
   },
   "robertn_waze_cluster": {
     "title": "Waze メーター表示",
-    "description": "CarPlayのWazeマップをメーターに表示します。HMIからパッチを有効にすると、地図がCarPlayに連動します"
+    "description": "CarPlay または Android Auto の地図をメーターに表示します。選べば HUD にも表示します。対応車両では、インストールしてヘッドユニットを再起動すると自動でオンになります。"
   }
 }

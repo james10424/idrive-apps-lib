@@ -13,6 +13,7 @@
 namespace woc {
 
 const char *const MapFeed::kWaiting = "Waiting for the phone's map";
+const char *const MapFeed::kHostHidden = "hidden by the app it is shown in";
 
 namespace {
 
@@ -55,10 +56,14 @@ MapFeed::MapFeed(const FeedConfig &cfg)
     };
     client_.on_target = [this](const std::string &t, const std::string &state, const std::string &holder,
                                const std::string &) {
-        if (t != cfg_.target)
+        if (t != drawn_target())
             return;
         target_state_ = state;
         holder_ = holder;
+    };
+    client_.on_host = [this](const cr::Host &h) {
+        if (h.target == cfg_.target)
+            set_host(h);
     };
     client_.on_budget = [this](unsigned cap, unsigned max, const std::string &reason) {
         cap_kb_ = cap;
@@ -85,6 +90,15 @@ void MapFeed::make_layer()
         log_error("render: %s", refused_.c_str());
         return;
     }
+    show_due_ = false;
+    refused_.clear();
+    layer_state_ = "stalled";
+    layer_reason_.clear();
+    target_state_.clear();
+    holder_.clear();
+    /* Hidden by its host: no layer anywhere, nothing sent. */
+    if (hosted() && !host_.shown)
+        return;
     /* The map area: all of the map slot's scene, the centred 1088x480 of a
      * whole-panel one, a fitted centre on the HUD. */
     crk::QuadRect q = quad(tw, th);
@@ -100,8 +114,42 @@ void MapFeed::make_layer()
     cr::VideoOptions vo = cfg_.video;
     scaling_ = false;
     const uint32_t sw = q.w & ~3u, sh = q.h & ~3u;
-    if (cfg_.target == "hud" && cfg_.scale_down && (sw < cfg_.video.w || sh < cfg_.video.h) && sw >= 64 && sh >= 32 &&
-        sw <= cfg_.video.w && sh <= cfg_.video.h) {
+    if (hosted()) {
+        /* Hosted: the part of the picture the host's src covers where the
+         * map would be (q), where that part lands in the host's rect,
+         * scaled on the head unit to at most that size. */
+        MapRect crop, place;
+        if (!host_crop(MapRect{q.x, q.y, q.w, q.h}, cfg_.video.w, cfg_.video.h,
+                       MapRect{(uint32_t)host_.src_x, (uint32_t)host_.src_y, host_.src_w, host_.src_h},
+                       MapRect{(uint32_t)host_.x, (uint32_t)host_.y, host_.w, host_.h}, &crop, &place)) {
+            refused_ = "the host's part of " + cfg_.target + " misses the map";
+            log_error("render: %s", refused_.c_str());
+            return;
+        }
+        const uint32_t dw = (crop.w < place.w ? crop.w : place.w) & ~3u, dh = (crop.h < place.h ? crop.h : place.h) & ~1u;
+        if (dw < 64 || dh < 32) {
+            refused_ = "the map's part in the host's rect is smaller than 64x32";
+            log_error("render: %s", refused_.c_str());
+            return;
+        }
+        q = crk::QuadRect{place.x, place.y, place.w, place.h};
+        vo.w = dw;
+        vo.h = dh;
+        scaling_ = true;
+        shape_ = ScaleShape();
+        shape_.w = cfg_.video.w;
+        shape_.h = cfg_.video.h;
+        shape_.dw = dw;
+        shape_.dh = dh;
+        shape_.crop_x = crop.x;
+        shape_.crop_y = crop.y;
+        shape_.crop_w = crop.w;
+        shape_.crop_h = crop.h;
+        shape_.level_bits = cfg_.video.level_bits;
+        log_info("render: hosted by a scene on %s: the map's %ux%u at %u,%u, as %ux%u", host_.into.c_str(), crop.w,
+                 crop.h, crop.x, crop.y, dw, dh);
+    } else if (cfg_.target == "hud" && cfg_.scale_down && (sw < cfg_.video.w || sh < cfg_.video.h) && sw >= 64 &&
+               sh >= 32 && sw <= cfg_.video.w && sh <= cfg_.video.h) {
         q.x += (q.w - sw) / 2;
         q.y += (q.h - sh) / 2;
         q.w = sw;
@@ -119,25 +167,42 @@ void MapFeed::make_layer()
         shape_.black = cfg_.hud_black_background;
     }
     lo_ = cr::LayerOptions();
-    lo_.target = cfg_.target;
+    lo_.target = drawn_target();
     lo_.klass = "content";
-    lo_.contend = true;   /* the map takes the slot back from the stock map */
+    /* the map takes the slot back from the stock map; in a host's scene
+     * the scene's owner decides that */
+    lo_.contend = !hosted();
     lo_.guide_hold = cfg_.guide_hold;
-    lo_.yield = cfg_.target != "hud" || !cfg_.hud_keep_shown;
+    lo_.yield = hosted() || cfg_.target != "hud" || !cfg_.hud_keep_shown;
     lo_.x = (int)q.x;
     lo_.y = (int)q.y;
     lo_.w = q.w;
     lo_.h = q.h;
     lo_.visible = live_ && !frozen_ && picture_ == Picture::Shown;
-    show_due_ = false;
-    refused_.clear();
-    layer_state_ = "stalled";
-    layer_reason_.clear();
-    target_state_.clear();
-    holder_.clear();
     layer_ = client_.video(lo_, vo);
-    log_info("render: map layer on %s (%ux%u), quad %ux%u at %u,%u%s", cfg_.target.c_str(), tw, th, q.w, q.h, q.x, q.y,
+    if (hosted())
+        target_size(client_.targets, host_.into, &tw, &th);
+    log_info("render: map layer on %s (%ux%u), quad %ux%u at %u,%u%s", lo_.target.c_str(), tw, th, q.w, q.h, q.x, q.y,
              scaling_ ? ", the frame scaled to it on the head unit" : "");
+}
+
+void MapFeed::set_host(const cr::Host &h)
+{
+    if (h == host_)
+        return;
+    host_ = h;
+    if (!hosted())
+        log_info("render: %s is not hosted any more: the map on its own target", cfg_.target.c_str());
+    else
+        log_info("render: %s hosted by a scene on %s at %ux%u+%d+%d%s", cfg_.target.c_str(), h.into.c_str(), h.w, h.h,
+                 h.x, h.y, h.shown ? "" : ", hidden there: nothing sent");
+    if (layer_) {
+        keep_newest();
+        client_.drop(layer_);
+        layer_ = 0;
+    }
+    if (client_.connected())
+        make_layer();
 }
 
 /* Where the map goes on a target of tw x th: the kit's fitted rect, or on
@@ -178,7 +243,8 @@ void MapFeed::set_hud_offset(int dx, int dy)
     cfg_.hud_offset_x = placed_x_ = dx;
     cfg_.hud_offset_y = placed_y_ = dy;
     uint32_t tw, th;
-    if (cfg_.target != "hud" || !layer_ || !target_size(client_.targets, "hud", &tw, &th))
+    /* hosted, the host places it: the offset waits for the HUD's own */
+    if (cfg_.target != "hud" || !layer_ || hosted() || !target_size(client_.targets, "hud", &tw, &th))
         return;
     const crk::QuadRect q = quad(tw, th);
     lo_.x = (int)q.x;
@@ -190,7 +256,7 @@ void MapFeed::set_hud_offset(int dx, int dy)
 void MapFeed::set_hud_keep_shown(bool keep)
 {
     cfg_.hud_keep_shown = keep;
-    const bool yield = cfg_.target != "hud" || !keep;
+    const bool yield = hosted() || cfg_.target != "hud" || !keep;
     if (layer_ && lo_.yield != yield) {
         lo_.yield = yield;
         client_.set(layer_, lo_);
@@ -204,7 +270,8 @@ void MapFeed::set_hud_width(unsigned pct)
         return;
     cfg_.hud_width_pct = pct;
     uint32_t tw, th;
-    if (cfg_.target != "hud" || !layer_ || !target_size(client_.targets, "hud", &tw, &th))
+    /* hosted, the host sizes it: the width waits for the HUD's own */
+    if (cfg_.target != "hud" || !layer_ || hosted() || !target_size(client_.targets, "hud", &tw, &th))
         return;
     /* the texture's size changes with it: a new layer at the new size */
     log_info("render: HUD map %u%% wide", pct);
@@ -228,6 +295,8 @@ bool MapFeed::set_target(const std::string &name)
     }
     layer_ = 0;
     cfg_.target = t;
+    auto host = client_.hosts.find(t);
+    host_ = host == client_.hosts.end() ? cr::Host() : host->second;
     if (client_.connected())
         make_layer();
     return true;
@@ -249,6 +318,9 @@ void MapFeed::poll(int64_t now_ms)
     if (connected_ && !client_.connected()) {
         connected_ = false;
         log_warn("render: the cluster renderer went away; reconnecting");
+        /* Its hosts went with it: the layer comes back on the feed's own
+         * target, and in the host's scene again once it says so. */
+        set_host(cr::Host());
     }
     if (client_.connected()) {
         down_since_ms_ = -1;
@@ -452,7 +524,8 @@ bool StatusLog::due(const FeedStatus &s, int64_t now_ms)
 FeedStatus MapFeed::status(const std::string &decode, const std::string &stream) const
 {
     FeedStatus s;
-    s.target = cfg_.target;
+    s.target = drawn_target();
+    s.hosted = hosted();
     s.hud_width_pct = cfg_.hud_width_pct;
     s.hud_offset_x = placed_x_;
     s.hud_keep_shown = cfg_.hud_keep_shown;
@@ -488,6 +561,10 @@ FeedStatus MapFeed::status(const std::string &decode, const std::string &stream)
         s.stream_reason = !stream.empty();
         if (stream.empty() && picture_ == Picture::Blank)
             s.reason = kWaiting;
+    } else if (hosted() && !host_.shown) {
+        s.state = "idle";   /* no layer: nothing sent */
+        s.page = decode;
+        s.reason = kHostHidden;
     } else if (layer_state_ == "shown") {
         s.state = "showing";
         char p[400];

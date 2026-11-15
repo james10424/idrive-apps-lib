@@ -10,8 +10,10 @@
  * restarting under the client, whose layers, assets, parts and binds come
  * back by themselves; a synthetic scene file on the panel, shown with the
  * layers there waiting, its edit lines kept by key, a malformed one and one
- * changing nothing reported, and dropped; close() and connect() in one tick
- * making one connection. */
+ * changing nothing reported, and dropped; one with layers, the layers drawn
+ * over it, hosting the map, shown and hidden, the other client told, and the
+ * host ended when it is dropped; close() and connect() in one tick making one
+ * connection. */
 'use strict';
 
 const assert = require('assert');
@@ -100,6 +102,9 @@ async function main() {
         tex > 0 && !ovl.pixels(tex, null, Buffer.alloc(2048 * 1024 - 16)) &&
         !ovl.pixels(tex, [{ x: 0, y: 0, w: 4, h: 4 }], Buffer.alloc(16)) &&
         ovl.pixels(tex, null, Buffer.alloc(2048 * 1024, 7)) && ovl.frameBytes(tex) === 2048 * 1024);
+    const opaque = ovl.asset({ target: 'panel', format: 'etc2rgb', w: 2048, h: 1024 });
+    ok('an etc2rgb one takes 8 bytes a block', opaque > 0 && !ovl.pixels(opaque, null, Buffer.alloc(2048 * 1024)) &&
+        ovl.pixels(opaque, null, Buffer.alloc(1024 * 1024, 7)) && ovl.frameBytes(opaque) === 1024 * 1024);
     const label = ovl.effect({ target: 'panel', klass: 'overlay', x: 40, y: 600, w: 128, h: 64, time: true,
         fs: '#version 100\nprecision mediump float;\nuniform sampler2D u_atlas;\nuniform vec4 u_cells[2];\n' +
             'uniform float u_time;\nvarying vec2 v_uv;\n' +
@@ -163,6 +168,33 @@ async function main() {
             eo.refused.some((r) => r.indexOf('edit: \'--show ^nothing$\' changed nothing') === 0), 1000));
     ovl.drop(gauge);
     ok('dropped: the layers there shown again', await until(() => eo.layer[label] === 'shown', 3000));
+    const hosted = [];
+    waze.on('host', (t, ev) => hosted.push(t + ':' + (ev.into || '-') + (ev.into ? ':' + ev.shown + ':' + ev.w : '')));
+    const over = ovl.scene({ target: 'panel', file: file, sha256: [sha256], layers: true });
+    ok('a scene with layers: shown, the layers there drawn over it',
+        await until(() => eo.layer[over] === 'shown' && eo.layer[label] === 'shown', 3000));
+    ok('a host needs a scene with layers and another target', !ovl.host(badge, { target: 'map' }) &&
+        !ovl.host(over, {}) && !ovl.host(over, { target: 'panel', x: 0, y: 0, w: 10, h: 10 }));
+    ovl.host(over, { target: 'map', x: 700, y: 160, w: 560, h: 400, src_x: 264 });
+    ok('a part goes with src_w and src_h only, all four (as the C++ client): none here, all of the map',
+        !('src_x' in ovl.layers.get(over).hosts.get('map')));
+    ovl.host(over, { target: 'map', x: 700, y: 160, w: 560, h: 400, src_x: 264, src_w: 560, src_h: 400, src_y: 40 });
+    const sent = ovl.layers.get(over).hosts.get('map');
+    ok('with them, all four', sent.src_x === 264 && sent.src_y === 40 && sent.src_w === 560 && sent.src_h === 400);
+    ok('it hosts the map: the other client told', await until(() => hosted.indexOf('map:panel:1:560') >= 0, 2000));
+    ovl.host(over, { target: 'map', x: 1800, y: 160, w: 560, h: 400 });
+    ok('a host refused: the client forgets it, the service ends it', await until(() =>
+        !ovl.layers.get(over).hosts.has('map') && hosted[hosted.length - 1] === 'map:-' &&
+        eo.refused.some((r) => r.indexOf('host: x, y, w, h must lie inside panel') === 0), 2000));
+    ovl.host(over, { target: 'map', x: 700, y: 160, w: 560, h: 400, shown: false });
+    ok('hidden: told', await until(() => hosted.indexOf('map:panel:0:560') >= 0, 2000));
+    ovl.replace(over, { target: 'panel', file: file, sha256: [sha256], layers: true });
+    ok('the file replaced: its hosts forgotten and ended', ovl.layers.get(over).hosts.size === 0 &&
+        await until(() => hosted[hosted.length - 1] === 'map:-', 2000));
+    ovl.host(over, { target: 'map', x: 700, y: 160, w: 560, h: 400 });
+    ok('hosted again', await until(() => hosted[hosted.length - 1] === 'map:panel:1:560', 2000));
+    ovl.drop(over);
+    ok('dropped: the map not hosted any more', await until(() => hosted[hosted.length - 1] === 'map:-', 2000));
 
     clearInterval(feed);
     ok('frames stopping: the video is stalled after its stall time',

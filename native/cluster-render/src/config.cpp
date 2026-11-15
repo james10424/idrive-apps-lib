@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 
 namespace cld {
 
@@ -55,14 +56,31 @@ void Config::define(const char *key, const char *def)
     values_.emplace(key, def);
 }
 
-bool Config::set(const std::string &key, const std::string &value, std::string *err)
+bool Config::set(const std::string &key, const std::string &value, bool append, std::string *err)
 {
     auto it = values_.find(key);
     if (it == values_.end()) {
-        *err = "unknown setting " + key;
-        return false;
+        if (!extra_keys || !extra_keys(key)) {
+            *err = "unknown setting " + key;
+            return false;
+        }
+        it = values_.emplace(key, std::string()).first;
     }
-    it->second = value;
+    if (!append) {
+        it->second = value;
+        return true;
+    }
+    /* Each entry once: the list is short. */
+    std::stringstream add(value);
+    for (std::string e; std::getline(add, e, ',');) {
+        e = trim(e);
+        bool have = e.empty();
+        std::stringstream cur(it->second);
+        for (std::string c; !have && std::getline(cur, c, ',');)
+            have = trim(c) == e;
+        if (!have)
+            it->second += (trim(it->second).empty() ? "" : ",") + e;
+    }
     return true;
 }
 
@@ -73,7 +91,11 @@ bool Config::set_pair(const std::string &pair, std::string *err)
         *err = "expected key=value: " + pair;
         return false;
     }
-    return set(trim(pair.substr(0, eq)), trim(pair.substr(eq + 1)), err);
+    std::string key = trim(pair.substr(0, eq));
+    const bool append = !key.empty() && key.back() == '+';
+    if (append)
+        key = trim(key.substr(0, key.size() - 1));
+    return set(key, trim(pair.substr(eq + 1)), append, err);
 }
 
 bool Config::load(const std::string &path, std::string *err)
@@ -83,6 +105,11 @@ bool Config::load(const std::string &path, std::string *err)
         *err = "cannot read " + path;
         return false;
     }
+    return load(f, path, err);
+}
+
+bool Config::load(std::istream &f, const std::string &path, std::string *err)
+{
     std::string line;
     int n = 0;
     while (std::getline(f, line)) {

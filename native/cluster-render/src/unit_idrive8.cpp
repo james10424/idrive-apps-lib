@@ -22,8 +22,6 @@
 
 #include <algorithm>
 #include <codecvt>
-#include <fstream>
-#include <iterator>
 #include <locale>
 
 #include "dcsm27_port.h"
@@ -37,6 +35,7 @@
 #include "ramses-framework-api/IDcsmProviderEventHandler.h"
 #include "ramses-framework-api/RamsesFramework.h"
 #include "ramses-framework-api/RamsesFrameworkConfig.h"
+#include "settings.h"
 #include "unit.h"
 
 /* In the unit's libramses 27.0.116r1, not in the open-source headers
@@ -129,15 +128,14 @@ private:
         md->setPreviewDescription(text);
         md->setWidgetOrder((int32_t)cfg_.num((k + "order").c_str()));
         const std::string preview = cfg_.str((k + "preview").c_str());
+        if (preview.empty())
+            return;
         std::vector<char> png;
-        if (!preview.empty()) {
-            std::ifstream f(preview, std::ios::binary);
-            png.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-            if (png.empty())
-                log_error("target %s: no picture in %s", t.name.c_str(), preview.c_str());
-            else
-                md->setPreviewImagePng(png.data(), png.size());
-        }
+        std::string why;
+        if (read_preview(preview, &png, &why))
+            md->setPreviewImagePng(png.data(), png.size());
+        else
+            log_error("target %s: no picture in %s: %s", t.name.c_str(), preview.c_str(), why.c_str());
     }
 
     ramses::DcsmProvider &p_;

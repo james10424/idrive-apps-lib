@@ -97,9 +97,12 @@ public:
     {
         if (!scene_)
             return;
-        if (scene_->isPublished())
+        /* A borrowed scene went first, with every object in it (graph.h
+         * FileScene::layers): only the client's resources are left. */
+        if (!borrowed_ && scene_->isPublished())
             scene_->unpublish();
-        client_.destroy(*scene_);   /* and every object in it */
+        if (!borrowed_)
+            client_.destroy(*scene_);   /* and every object in it */
         for (auto &kv : parts_)
             for (const ramses::Resource *r : kv.second.res)
                 client_.destroy(*r);
@@ -141,6 +144,36 @@ public:
         return true;
     }
 
+    /* In a scene file's scene, published already, over its own passes: the
+     * passes at render orders from base up, none clearing. */
+    bool over(ramses::Scene *scene, uint32_t w, uint32_t h, int32_t base, std::string *err)
+    {
+        scene_ = scene;
+        borrowed_ = true;
+        base_ = base;
+        w_ = w;
+        h_ = h;
+        cam2d_ = scene_->createOrthographicCamera("cluster-render layers");
+        Segment s;
+        s.pass = scene_->createRenderPass("cluster-render layers");
+        s.group = scene_->createRenderGroup();
+        if (!cam2d_ || !s.pass || !s.group || !ok(cam2d_->setFrustum(0.0f, (float)w_, 0.0f, (float)h_, 0.1f, 10.0f)) ||
+            !ok(cam2d_->setViewport(0, 0, w_, h_)) || !ok(s.pass->setCamera(*cam2d_)) ||
+            !ok(s.pass->addRenderGroup(*s.group)) || !ok(s.pass->setClearFlags(ramses::EClearFlags_None)) ||
+            !ok(s.pass->setRenderOrder(base_))) {
+            /* nothing of ours left in the file's scene */
+            if (s.pass) scene_->destroy(*s.pass);
+            if (s.group) scene_->destroy(*s.group);
+            if (cam2d_) scene_->destroy(*cam2d_);
+            cam2d_ = nullptr;
+            *err = "scene objects failed";
+            return false;
+        }
+        s.render_order = base_;
+        segments_.push_back(s);
+        return true;
+    }
+
     int buffer(TexFormat f, uint32_t w, uint32_t h, Sampling s) override { return buffer(f, w, h, s, Wrap::Clamp); }
 
     int buffer(TexFormat f, uint32_t w, uint32_t h, Sampling s, Wrap wrap) override
@@ -165,17 +198,19 @@ public:
         return next_++;
     }
 
-    /* ETC2RGBA only: a client resource, sent with
-     * the next flush and uploaded by the display's renderer. */
+    /* ETC2RGBA or ETC2RGB: a client resource, sent with the next flush and
+     * uploaded by the display's renderer. */
     int immutable_texture(TexFormat f, uint32_t w, uint32_t h, Sampling s, Wrap wrap, const uint8_t *data,
                           size_t n) override
     {
-        if (f != TexFormat::ETC2RGBA)
+        if (!tex_compressed(f))
             return 0;
         const ramses::ETextureAddressMode mode =
             wrap == Wrap::Repeat ? ramses::ETextureAddressMode_Repeat : ramses::ETextureAddressMode_Clamp;
         const ramses::MipLevelData mip((uint32_t)n, data);
-        ramses::Texture2D *tex = client_.createTexture2D(w, h, ramses::ETextureFormat_ETC2RGBA, 1, &mip, false);
+        ramses::Texture2D *tex = client_.createTexture2D(
+            w, h, f == TexFormat::ETC2RGB ? ramses::ETextureFormat_ETC2RGB : ramses::ETextureFormat_ETC2RGBA, 1, &mip,
+            false);
         ramses::TextureSampler *smp =
             tex ? scene_->createTextureSampler(mode, mode,
                                                s == Sampling::Nearest ? ramses::ETextureSamplingMethod_Nearest
@@ -183,7 +218,7 @@ public:
                                                *tex)
                 : nullptr;
         if (!smp) {
-            log_error("ramses: %ux%u ETC2RGBA texture of %zu bytes refused by %s", w, h, n,
+            log_error("ramses: %ux%u %s texture of %zu bytes refused by %s", w, h, tex_format_name(f), n,
                       tex ? "createTextureSampler" : "createTexture2D");
             if (tex)
                 client_.destroy(*tex);
@@ -894,14 +929,14 @@ private:
         }
         for (const auto &kv : segment_of) {
             Segment &s = segments_[kv.second];
-            if (s.render_order != kv.first && ok(s.pass->setRenderOrder(kv.first)))
-                s.render_order = kv.first;
+            if (s.render_order != base_ + kv.first && ok(s.pass->setRenderOrder(base_ + kv.first)))
+                s.render_order = base_ + kv.first;
         }
         for (size_t i = 0; i < items.size(); i++) {
             if (items[i].view) {
                 View &v = views_[items[i].handle];
-                if (v.render_order != pass[i] && ok(v.pass->setRenderOrder(pass[i])))
-                    v.render_order = pass[i];
+                if (v.render_order != base_ + pass[i] && ok(v.pass->setRenderOrder(base_ + pass[i])))
+                    v.render_order = base_ + pass[i];
                 continue;
             }
             Quad &q = quads_[items[i].handle];
@@ -930,6 +965,10 @@ private:
     ramses::AnimationSystemRealTime *anim_ = nullptr;
     std::vector<Segment> segments_;
     uint32_t w_ = 0, h_ = 0;
+    /* In a scene file's scene (over()): not ours to publish or destroy; the
+     * passes' render orders start at base_. */
+    bool borrowed_ = false;
+    int32_t base_ = 0;
     bool write_failing_ = false, flush_failing_ = false;   /* log the first of a run */
     bool layout_dirty_ = false;
     std::map<int, Buffer> buffers_;
@@ -1075,7 +1114,13 @@ bool set_tree(ramses::Node &n, bool on)
 
 class Ramses19FileScene : public FileScene {
 public:
-    Ramses19FileScene(ramses::RamsesClient &client, const Ramses19Types &types) : client_(client), types_(types) {}
+    /* effects, pos and idx: the participant's, for layers() */
+    Ramses19FileScene(ramses::RamsesClient &client, const Ramses19Types &types,
+                      const std::map<int, ramses::Effect *> &effects, const ramses::Vector2fArray &pos,
+                      const ramses::UInt16Array &idx)
+        : client_(client), types_(types), effects_(effects), pos_(pos), idx_(idx)
+    {
+    }
 
     ~Ramses19FileScene() override
     {
@@ -1111,6 +1156,8 @@ public:
             *err = b;
             return false;
         }
+        w_ = t.width;
+        h_ = t.height;
         collect(Node, types_.node);
         collect(Mesh, types_.mesh);
         collect(Camera, types_.persp);
@@ -1234,6 +1281,24 @@ public:
         return ok(s);
     }
 
+    std::unique_ptr<Graph> layers(const int32_t *order, std::string *err) override
+    {
+        int64_t base = 0;
+        if (order) {
+            base = *order;
+        } else {
+            for (ramses::RamsesObject *p : objs_[Pass])
+                base = std::max<int64_t>(base, (int64_t) static_cast<ramses::RenderPass *>(p)->getRenderOrder() + 1);
+        }
+        /* ponytail: room for 1024 passes above it; a file at the top of the range draws nothing over itself */
+        base = std::min<int64_t>(base, INT32_MAX - 1024);
+        std::unique_ptr<Ramses19Graph> g(new Ramses19Graph(client_, effects_, pos_, idx_));
+        if (!g->over(scene_, w_, h_, (int32_t)base, err))
+            return nullptr;
+        log_info("ramses: layers over the scene file from render order %lld", (long long)base);
+        return std::unique_ptr<Graph>(g.release());
+    }
+
 private:
     void collect(Kind k, uint32_t type)
     {
@@ -1246,6 +1311,10 @@ private:
 
     ramses::RamsesClient &client_;
     const Ramses19Types &types_;
+    const std::map<int, ramses::Effect *> &effects_;
+    const ramses::Vector2fArray &pos_;
+    const ramses::UInt16Array &idx_;
+    uint32_t w_ = 0, h_ = 0;
     /* The descriptions outlive the scene loaded from them. */
     std::vector<std::unique_ptr<ramses::ResourceFileDescription>> files_;
     ramses::Scene *scene_ = nullptr;
@@ -1339,7 +1408,7 @@ std::unique_ptr<FileScene> Ramses19Gpu::load(const TargetSpec &t, const std::str
         typed_ = learn(client_, &types_, err);
     if (!typed_)
         return nullptr;
-    std::unique_ptr<Ramses19FileScene> s(new Ramses19FileScene(client_, types_));
+    std::unique_ptr<Ramses19FileScene> s(new Ramses19FileScene(client_, types_, effects_, *pos_, *idx_));
     if (!s->load(t, file, res, err))
         return nullptr;
     return std::unique_ptr<FileScene>(s.release());
