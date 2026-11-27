@@ -35,14 +35,23 @@ void flat_blended(ramses::Appearance &app)
 const uint32_t kCutoutRef = 0xc5;
 
 /* A quad's or a part's stencil: skip the cut-out's pixels while there is
- * one, no test otherwise. */
-bool cut(ramses::Appearance &app, bool on)
+ * one, no test otherwise. A quad also tests depth while there is one: the
+ * cut-out's quad is nearer than every quad (kCutZ, quads at -1) and writes
+ * its depth, so a quad fails there. Both, as the KOMBI showed no stencil
+ * (0.6.3: nothing cut, Nov 27 2026). A part keeps its own depth (its view's
+ * pass clears it). */
+bool cut(ramses::Appearance &app, bool on, bool quad)
 {
     return ok(app.setStencilFunction(on ? ramses::EStencilFunc_NotEqual : ramses::EStencilFunc_Disabled, kCutoutRef,
                                      0xff)) &&
            ok(app.setStencilOperation(ramses::EStencilOperation_Keep, ramses::EStencilOperation_Keep,
-                                      ramses::EStencilOperation_Keep));
+                                      ramses::EStencilOperation_Keep)) &&
+           (!quad || ok(app.setDepthFunction(on ? ramses::EDepthFunc_LessEqual : ramses::EDepthFunc_Disabled)));
 }
+
+/* The cut-out quad's depth: nearer the 2D camera (looking down -z from 0,
+ * near 0.1) than the quads at -1. */
+const float kCutZ = -0.5f;
 
 bool part_look(ramses::Appearance &app, const PartLook &look)
 {
@@ -283,7 +292,7 @@ public:
         }
         flat_blended(*app);
         if (cut_on_)
-            cut(*app, true);
+            cut(*app, true, true);
         mesh->setAppearance(*app);
         mesh->setGeometryBinding(*geo);
         mesh->setVisibility(false);
@@ -500,7 +509,7 @@ public:
             return 0;
         }
         if (cut_on_)
-            cut(*app, true);
+            cut(*app, true, false);
         Part p;
         p.view = view;
         p.mesh = mesh;
@@ -640,7 +649,7 @@ public:
             return false;
         if (on) {
             const bool placed = ok(cut_placed_->setTranslation((float)r->x, (float)h_ - (float)r->y, 0.0f)) &&
-                                ok(cut_mesh_->setTranslation(0.0f, -(float)r->h, -1.0f)) &&
+                                ok(cut_mesh_->setTranslation(0.0f, -(float)r->h, kCutZ)) &&
                                 ok(cut_mesh_->setScaling((float)r->w, (float)r->h, 1.0f));
             if (!placed)
                 return false;
@@ -651,9 +660,9 @@ public:
             cut_on_ = on;
             bool good = true;
             for (auto &kv : quads_)
-                good = cut(*kv.second.app, on) && good;
+                good = cut(*kv.second.app, on, true) && good;
             for (auto &kv : parts_)
-                good = cut(*kv.second.app, on) && good;
+                good = cut(*kv.second.app, on, false) && good;
             if (!good)
                 log_warn("ramses: a layer's stencil was refused (cut-out %s)", on ? "on" : "off");
         }
@@ -930,8 +939,9 @@ private:
             rebuild();
     }
 
-    /* The cut-out's quad (cutout()): first in the first pass, writing only
-     * the stencil, kCutoutRef wherever it covers. */
+    /* The cut-out's quad (cutout()): first in the first pass, writing no
+     * colour, only kCutoutRef to the stencil and its depth (kCutZ) wherever
+     * it covers. */
     bool make_cut(int effect)
     {
         auto fx = effects_.find(effect);
@@ -947,7 +957,7 @@ private:
             ok(geo->setInputBuffer(ain, pos_)) && ok(geo->setIndices(idx_)) && ok(mesh->setParent(*placed)) &&
             ok(app->setColorWriteMask(false, false, false, false)) &&
             ok(app->setBlendingOperations(ramses::EBlendOperation_Disabled, ramses::EBlendOperation_Disabled)) &&
-            ok(app->setDepthFunction(ramses::EDepthFunc_Disabled)) && ok(app->setDepthWrite(false)) &&
+            ok(app->setDepthFunction(ramses::EDepthFunc_Always)) && ok(app->setDepthWrite(true)) &&
             ok(app->setCullingMode(ramses::ECullMode_Disabled)) &&
             ok(app->setStencilFunction(ramses::EStencilFunc_Always, kCutoutRef, 0xff)) &&
             ok(app->setStencilOperation(ramses::EStencilOperation_Replace, ramses::EStencilOperation_Replace,

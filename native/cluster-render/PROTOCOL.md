@@ -438,11 +438,12 @@ target; the last one set wins, and only the client that set it (or its
 connection closing) clears it. It is kept across the target's scenes. The
 rect is in target pixels, cut to the target.
 
-It is drawn with the stencil (`graph.h` `Graph::cutout`): a quad first in
-the draw order writes the stencil value 0xc5 over the rect, its colour never
-written, and every layer's quads and parts skip pixels holding that value.
-Where the display has no stencil buffer the test always passes and nothing
-is cut. Refused with `this display can't cut layers` on iDrive 8 (no backend
+It is drawn with the stencil and the depth buffer (`graph.h`
+`Graph::cutout`): a quad first in the draw order writes the stencil value
+0xc5 and a depth nearer than every layer's over the rect, its colour never
+written, and every layer's quads skip those pixels by either test (a mesh
+layer's parts by the stencil). Where the display has neither buffer nothing
+is cut (0.6.3's stencil alone cut nothing on the iDrive 7 KOMBI). Refused with `this display can't cut layers` on iDrive 8 (no backend
 yet). An error names the target when it is unknown.
 
 ## Service to client
