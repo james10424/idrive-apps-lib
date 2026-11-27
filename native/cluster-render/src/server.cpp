@@ -625,6 +625,10 @@ void Server::on_json(Client &c, const std::string &body, int64_t now_ms)
         op_scene(c, j);
         return;
     }
+    if (op == "cutout") {
+        op_cutout(c, j);
+        return;
+    }
     double ref_d = 0;
     std::string err;
     num(j, "ref", 0, 4294967295.0, &ref_d, &err);
@@ -687,6 +691,40 @@ void Server::on_json(Client &c, const std::string &body, int64_t now_ms)
         return;
     }
     op_on_layer(c, op, ref, l, j);
+}
+
+/* {op: "cutout", target, x, y, w, h}: none of the service's layers on the
+ * target draw inside the rect (a pop-up of the display's own shows through);
+ * without w and h, or with either 0, the client's cut-out goes (PROTOCOL.md). */
+void Server::op_cutout(Client &c, const cr::Json &j)
+{
+    const int target = slots_->index(str(j, "target"));
+    if (target < 0 || !slots_->targets()[target].follows.empty()) {
+        error(c, "cutout", 0, "unknown target " + str(j, "target"));
+        return;
+    }
+    const TargetSpec &spec = slots_->targets()[target];
+    double x = 0, y = 0, w = 0, h = 0;
+    std::string err;
+    if (!num(j, "x", 0, spec.width, &x, &err) || !num(j, "y", 0, spec.height, &y, &err) ||
+        !num(j, "w", 0, spec.width, &w, &err) || !num(j, "h", 0, spec.height, &h, &err)) {
+        error(c, "cutout", 0, err);
+        return;
+    }
+    Rect r;
+    r.x = (int32_t)x;
+    r.y = (int32_t)y;
+    r.w = (uint32_t)std::min(w, spec.width - x);
+    r.h = (uint32_t)std::min(h, spec.height - y);
+    const bool on = r.w && r.h;
+    if (!comp_->cutout(c.id, target, on ? &r : nullptr, &err)) {
+        error(c, "cutout", 0, err);
+        return;
+    }
+    log_info("client %llu (%s): target %s cut-out %s", (unsigned long long)c.id, c.app.c_str(), spec.name.c_str(),
+             on ? (std::to_string(r.x) + "," + std::to_string(r.y) + " " + std::to_string(r.w) + "x" +
+                   std::to_string(r.h)).c_str()
+                : "off");
 }
 
 void Server::op_asset(Client &c, const cr::Json &j)

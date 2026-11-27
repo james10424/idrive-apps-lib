@@ -206,6 +206,20 @@ public:
     virtual int animate(int node, const Animation &a) = 0;
     virtual void stop(int anim) = 0;
 
+    /* A cut-out: while r is set, no quad or part of this scene draws inside
+     * it, so what is below the scene shows through there (a pop-up of the
+     * display's own). Drawn by the stencil: a quad of effect (any; its
+     * colour is never written) marks r first in the draw order, and every
+     * quad and part skips marked pixels. Null r: none. False where the
+     * backend has no stencil, or it was refused. Where the display has no
+     * stencil buffer the test always passes: nothing is cut. */
+    virtual bool cutout(int effect, const Rect *r)
+    {
+        (void)effect;
+        (void)r;
+        return false;
+    }
+
     /* Sends everything changed since the last flush as one update, tagged. */
     virtual bool flush(uint64_t tag) = 0;
 };

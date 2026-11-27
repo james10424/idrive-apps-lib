@@ -74,6 +74,10 @@ struct FakeState {
     std::map<int, FakeView> views;
     std::map<int, FakePart> parts;
     std::map<int, FakeAnimation> animations;
+    /* The cut-out (Graph::cutout): on, its rect and the stencil quad's effect. */
+    bool cut_on = false;
+    Rect cut;
+    int cut_fx = 0;
 };
 
 class FakeGraph : public Graph {
@@ -280,6 +284,17 @@ public:
         return next++;
     }
     void stop(int anim) override { pending.animations.erase(anim); }
+
+    bool refuse_cutout = false;   /* cutout() refused, as a backend without a stencil */
+    bool cutout(int effect, const Rect *r) override
+    {
+        if (refuse_cutout)
+            return false;
+        pending.cut_on = r && r->w && r->h;
+        pending.cut = pending.cut_on ? *r : Rect();
+        pending.cut_fx = effect;
+        return true;
+    }
 
     bool flush(uint64_t tag) override
     {

@@ -873,6 +873,39 @@ static void effects()
     ok("a uniform the shader lacks is dropped, not retried", g->flushes <= f0 + 1);
 }
 
+/* A target's cut-out: kept until its scene exists, reaching the graph and
+ * its next flush; only its owner (or the owner's leaving) clears it; another
+ * client's replaces it. */
+static void cutouts()
+{
+    Rig r;
+    std::string err;
+    const Rect pop = R(760, 590, 530, 130);
+    ok("a cut-out before the target's scene is kept", r.comp->cutout(1, r.panel, &pop, &err));
+    r.comp->add_effect(1, r.panel, params(Klass::Overlay, R(0, 0, 8, 8)), "", kFill, 0, r.now, &err);
+    r.step(10);
+    FakeGraph *g = r.g("panel");
+    ok("and given to its scene when made", g && g->shown.cut_on && g->shown.cut == pop && g->shown.cut_fx != 0);
+    ok("another client's off leaves it", r.comp->cutout(2, r.panel, nullptr, &err) && (r.step(10), g->shown.cut_on));
+    const uint64_t f0 = g->flushes;
+    ok("its owner's off clears it, with a flush",
+       r.comp->cutout(1, r.panel, nullptr, &err) && (r.step(10), !g->shown.cut_on) && g->flushes > f0);
+    const Rect other = R(0, 0, 100, 50);
+    r.comp->cutout(1, r.panel, &pop, &err);
+    r.comp->cutout(2, r.panel, &other, &err);
+    r.step(10);
+    ok("the last set wins", g->shown.cut_on && g->shown.cut == other);
+    r.comp->remove_owner(1);
+    r.step(10);
+    ok("the first owner's leaving doesn't clear the second's", g->shown.cut_on);
+    r.comp->remove_owner(2);
+    r.step(10);
+    ok("its owner's leaving clears it", !g->shown.cut_on);
+    g->refuse_cutout = true;
+    ok("a display that can't cut says so", !r.comp->cutout(3, r.panel, &pop, &err) && !err.empty());
+    ok("an unknown target is refused", !r.comp->cutout(3, 99, &pop, &err));
+}
+
 static void limits()
 {
     CompositorLimits lim;
@@ -1844,6 +1877,7 @@ int main()
     warm_scene_charged();
     republish_keeps_content();
     effects();
+    cutouts();
     limits();
     layer_limits();
     many_layers_within_budget();

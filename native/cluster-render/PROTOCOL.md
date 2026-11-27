@@ -46,6 +46,7 @@ lacks.
 | `scene` | `ref`, `target`, `file`, `res`, `sha256`, `contend`, `layers`, `layers_order` ([below](#scene-files)); sent again with its ref, another file in place |
 | `edit` | `ref` (a scene), `lines` ([below](#scene-edits)) |
 | `host` | `ref` (a scene with `layers` 1), `target`, `x`, `y`, `w`, `h`, `src_x`, `src_y`, `src_w`, `src_h`, `shown` ([below](#hosting-another-target)) |
+| `cutout` | `target`, `x`, `y`, `w`, `h`: none of the service's layers on the target draw inside the rect ([below](#cut-outs)); without `w` and `h`, or either 0, the client's cut-out goes |
 | `drop` | `ref`: a layer, a scene, or an asset no layer samples (else refused: `asset in use`) |
 | `repeat` | `ref` (a video layer): a frame whose atlas is the layer's last frame's, byte for byte, in place of that frame; to a service whose hello has `repeat` 1 |
 | `status` | — (answered by a `status` event) |
@@ -427,6 +428,22 @@ draws no layers over it. The client libraries keep a scene's `host`
 messages and send them again after a reconnect, except one the service
 refused or one whose scene was sent again since, and send none for a scene
 without `layers` or for the scene's own target.
+
+### Cut-outs
+
+A `cutout` opens a window through every layer of the service on a target,
+every client's, so what the display draws below them shows there: a pop-up
+of the cluster's own, say, over a layout that covers the whole panel. One a
+target; the last one set wins, and only the client that set it (or its
+connection closing) clears it. It is kept across the target's scenes. The
+rect is in target pixels, cut to the target.
+
+It is drawn with the stencil (`graph.h` `Graph::cutout`): a quad first in
+the draw order writes the stencil value 0xc5 over the rect, its colour never
+written, and every layer's quads and parts skip pixels holding that value.
+Where the display has no stencil buffer the test always passes and nothing
+is cut. Refused with `this display can't cut layers` on iDrive 8 (no backend
+yet). An error names the target when it is unknown.
 
 ## Service to client
 

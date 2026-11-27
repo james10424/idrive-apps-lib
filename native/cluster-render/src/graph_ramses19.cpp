@@ -30,6 +30,20 @@ void flat_blended(ramses::Appearance &app)
     app.setCullingMode(ramses::ECullMode_Disabled);
 }
 
+/* The cut-out's stencil value (graph.h Graph::cutout): one a display's own
+ * content is unlikely to leave in the buffer. */
+const uint32_t kCutoutRef = 0xc5;
+
+/* A quad's or a part's stencil: skip the cut-out's pixels while there is
+ * one, no test otherwise. */
+bool cut(ramses::Appearance &app, bool on)
+{
+    return ok(app.setStencilFunction(on ? ramses::EStencilFunc_NotEqual : ramses::EStencilFunc_Disabled, kCutoutRef,
+                                     0xff)) &&
+           ok(app.setStencilOperation(ramses::EStencilOperation_Keep, ramses::EStencilOperation_Keep,
+                                      ramses::EStencilOperation_Keep));
+}
+
 bool part_look(ramses::Appearance &app, const PartLook &look)
 {
     bool good = ok(app.setDepthFunction(look.depth ? ramses::EDepthFunc_LessEqual : ramses::EDepthFunc_Disabled)) &&
@@ -268,6 +282,8 @@ public:
             return 0;
         }
         flat_blended(*app);
+        if (cut_on_)
+            cut(*app, true);
         mesh->setAppearance(*app);
         mesh->setGeometryBinding(*geo);
         mesh->setVisibility(false);
@@ -483,6 +499,8 @@ public:
             if (app) scene_->destroy(*app);
             return 0;
         }
+        if (cut_on_)
+            cut(*app, true);
         Part p;
         p.view = view;
         p.mesh = mesh;
@@ -613,6 +631,33 @@ public:
     {
         if (anims_.erase(anim))
             rebuild();
+    }
+
+    bool cutout(int effect, const Rect *r) override
+    {
+        const bool on = r && r->w && r->h;
+        if (on && !cut_mesh_ && !make_cut(effect))
+            return false;
+        if (on) {
+            const bool placed = ok(cut_placed_->setTranslation((float)r->x, (float)h_ - (float)r->y, 0.0f)) &&
+                                ok(cut_mesh_->setTranslation(0.0f, -(float)r->h, -1.0f)) &&
+                                ok(cut_mesh_->setScaling((float)r->w, (float)r->h, 1.0f));
+            if (!placed)
+                return false;
+        }
+        if (cut_mesh_ && !ok(cut_mesh_->setVisibility(on)))
+            return false;
+        if (on != cut_on_) {
+            cut_on_ = on;
+            bool good = true;
+            for (auto &kv : quads_)
+                good = cut(*kv.second.app, on) && good;
+            for (auto &kv : parts_)
+                good = cut(*kv.second.app, on) && good;
+            if (!good)
+                log_warn("ramses: a layer's stencil was refused (cut-out %s)", on ? "on" : "off");
+        }
+        return true;
     }
 
     bool flush(uint64_t tag) override
@@ -885,6 +930,46 @@ private:
             rebuild();
     }
 
+    /* The cut-out's quad (cutout()): first in the first pass, writing only
+     * the stencil, kCutoutRef wherever it covers. */
+    bool make_cut(int effect)
+    {
+        auto fx = effects_.find(effect);
+        if (fx == effects_.end())
+            return false;
+        ramses::Appearance *app = scene_->createAppearance(*fx->second);
+        ramses::GeometryBinding *geo = scene_->createGeometryBinding(*fx->second);
+        ramses::MeshNode *mesh = scene_->createMeshNode();
+        ramses::GroupNode *placed = scene_->createGroupNode();
+        ramses::AttributeInput ain;
+        const bool good =
+            app && geo && mesh && placed && ok(fx->second->findAttributeInput("a_position", ain)) &&
+            ok(geo->setInputBuffer(ain, pos_)) && ok(geo->setIndices(idx_)) && ok(mesh->setParent(*placed)) &&
+            ok(app->setColorWriteMask(false, false, false, false)) &&
+            ok(app->setBlendingOperations(ramses::EBlendOperation_Disabled, ramses::EBlendOperation_Disabled)) &&
+            ok(app->setDepthFunction(ramses::EDepthFunc_Disabled)) && ok(app->setDepthWrite(false)) &&
+            ok(app->setCullingMode(ramses::ECullMode_Disabled)) &&
+            ok(app->setStencilFunction(ramses::EStencilFunc_Always, kCutoutRef, 0xff)) &&
+            ok(app->setStencilOperation(ramses::EStencilOperation_Replace, ramses::EStencilOperation_Replace,
+                                        ramses::EStencilOperation_Replace)) &&
+            ok(mesh->setAppearance(*app)) && ok(mesh->setGeometryBinding(*geo)) && ok(mesh->setVisibility(false)) &&
+            ok(segments_[0].group->addMeshNode(*mesh, INT32_MIN));
+        if (!good) {
+            if (mesh) {
+                segments_[0].group->removeMeshNode(*mesh);
+                scene_->destroy(*mesh);
+            }
+            if (placed) scene_->destroy(*placed);
+            if (geo) scene_->destroy(*geo);
+            if (app) scene_->destroy(*app);
+            log_warn("ramses: the cut-out's stencil quad was refused");
+            return false;
+        }
+        cut_mesh_ = mesh;
+        cut_placed_ = placed;
+        return true;
+    }
+
     /* Puts every quad and view in its pass, in draw order (plan_passes). */
     void relayout()
     {
@@ -977,6 +1062,11 @@ private:
     std::map<int, Part> parts_;
     std::map<int, Anim> anims_;
     int next_ = 1;
+    /* The cut-out (cutout()): its quad, made at the first, and whether it
+     * is on (every quad and part then skips its pixels). */
+    ramses::MeshNode *cut_mesh_ = nullptr;
+    ramses::GroupNode *cut_placed_ = nullptr;
+    bool cut_on_ = false;
 };
 
 /* Scene files on RAMSES 19 (graph.h FileScene): the scene and its resources

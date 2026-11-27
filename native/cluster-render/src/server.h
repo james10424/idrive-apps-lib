@@ -86,6 +86,7 @@ private:
     void op_asset(Client &c, const cr::Json &j);
     /* A scene file on a target (PROTOCOL.md "Scene files"), and its edits. */
     void op_scene(Client &c, const cr::Json &j);
+    void op_cutout(Client &c, const cr::Json &j);
     void op_edit(Client &c, uint32_t ref, const cr::Json &j);
     /* The scene ref hosts a target (PROTOCOL.md "host"). */
     void op_host(Client &c, uint32_t ref, const cr::Json &j);

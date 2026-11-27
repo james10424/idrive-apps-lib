@@ -263,6 +263,14 @@ public:
      * flush carries it. */
     void touch(Layer *l);
 
+    /* The target's cut-out (graph.h Graph::cutout): while set, none of the
+     * service's layers on it draw inside r, so the display's own content
+     * shows through (a pop-up). One a target, the last set wins; owner's
+     * goes with owner (remove_owner). Null r: none (only owner's). False
+     * with *err when the display can't cut one; kept all the same, for the
+     * target's next scene. */
+    bool cutout(uint64_t owner, int target, const Rect *r, std::string *err);
+
     /* A scene content, owned by a client (above); 0 with *err when the
      * target has one already. */
     uint32_t add_scene(uint64_t owner, int target, const SceneSource &src, bool contend, std::string *err);
@@ -421,6 +429,9 @@ private:
     };
     struct Target {
         std::unique_ptr<Graph> graph;
+        /* The cut-out (cutout()): its rect and who set it (0: none). */
+        Rect cut;
+        uint64_t cut_owner = 0;
         /* Or the scene of a scene content's file: which content's, its
          * serial, and its files' bytes. */
         std::unique_ptr<FileScene> file;
@@ -654,6 +665,7 @@ private:
     int64_t second_ms_ = 0;
     int64_t (*clock_us_)() = nullptr;
     int atlas_fx_ = 0, block_fx_ = 0, image_fx_ = 0;
+    int cut_fx_ = 0;   /* the cut-out's stencil quad (cutout()), compiled at the first */
     int atlas_view_fx_ = 0, block_view_fx_ = 0;   /* the composite's, made with the first one */
     std::string plan_error_;   /* why the last reconcile changed nothing; logged once */
     std::map<uint32_t, Entry> layers_;

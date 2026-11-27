@@ -26,6 +26,15 @@ void main() {
     gl_Position = u_mvp * vec4(a_position, 0.0, 1.0);
 })";
 
+namespace {
+/* The cut-out's stencil quad: its colour is never written. */
+const char *const kCutFragmentShader = R"(#version 100
+precision mediump float;
+void main() {
+    gl_FragColor = vec4(0.0);
+})";
+}  // namespace
+
 std::vector<int> plan_passes(const std::vector<bool> &views)
 {
     std::vector<int> pass(views.size());
@@ -113,6 +122,7 @@ Compositor::~Compositor()
     if (atlas_fx_) gpu_->drop_effect(atlas_fx_);
     if (block_fx_) gpu_->drop_effect(block_fx_);
     if (image_fx_) gpu_->drop_effect(image_fx_);
+    if (cut_fx_) gpu_->drop_effect(cut_fx_);
 }
 
 bool Compositor::init(std::string *err)
@@ -769,8 +779,39 @@ void Compositor::remove(uint64_t owner, uint32_t id)
         reconcile();
 }
 
+bool Compositor::cutout(uint64_t owner, int target, const Rect *r, std::string *err)
+{
+    if (target < 0 || (size_t)target >= targets_.size()) {
+        *err = "unknown target";
+        return false;
+    }
+    Target &t = targets_[target];
+    const bool on = r && r->w && r->h;
+    if (!on && t.cut_owner != owner)
+        return true;   /* not owner's: left as it is */
+    /* Its effect compiled at the first cut-out: a service never asked for
+     * one drives the display exactly as before. */
+    if (on && !cut_fx_ && !(cut_fx_ = gpu_->effect(kQuadVertexShader, kCutFragmentShader, err)))
+        return false;
+    t.cut = on ? *r : Rect();
+    t.cut_owner = on ? owner : 0;
+    if (!t.graph)
+        return true;   /* applied with the target's next scene */
+    t.dirty = true;
+    if (!t.graph->cutout(cut_fx_, on ? &t.cut : nullptr)) {
+        *err = "this display can't cut layers";
+        return false;
+    }
+    return true;
+}
+
 void Compositor::remove_owner(uint64_t owner)
 {
+    for (size_t ti = 0; ti < targets_.size(); ti++)
+        if (targets_[ti].cut_owner == owner) {
+            std::string why;
+            cutout(owner, (int)ti, nullptr, &why);
+        }
     /* Layers first: then no layer samples the assets. */
     std::vector<uint32_t> ids;
     for (const auto &kv : layers_)
@@ -1847,6 +1888,8 @@ bool Compositor::publish(const TargetSpec &spec, std::string *err)
     }
     t.tag = 0;
     t.flush_failing = false;
+    if (t.cut_owner)
+        t.graph->cutout(cut_fx_, &t.cut);   /* the cut-out, kept across scenes */
     /* A new scene shows nothing until its first flush. */
     t.flushed_fade = t.applied;
     t.fade_held = false;
